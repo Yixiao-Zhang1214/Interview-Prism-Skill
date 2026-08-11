@@ -533,6 +533,15 @@ class InterviewStoreTests(unittest.TestCase):
         store.import_session(self.data_dir, original)
         db_path = self.data_dir / "library.db"
         with sqlite3.connect(db_path) as connection:
+            segments_before = connection.execute(
+                """
+                SELECT segment_id, sequence_no, speaker_role, speaker_label,
+                       event_type, text, start_time, end_time, confidence
+                FROM segments
+                WHERE session_id = 'int_001'
+                ORDER BY sequence_no
+                """
+            ).fetchall()
             connection.execute(
                 """
                 CREATE TRIGGER abort_failed_revision
@@ -570,12 +579,22 @@ class InterviewStoreTests(unittest.TestCase):
             tasks = connection.execute(
                 "SELECT task_id, title FROM growth_tasks WHERE session_id = 'int_001'"
             ).fetchall()
+            segments_after = connection.execute(
+                """
+                SELECT segment_id, sequence_no, speaker_role, speaker_label,
+                       event_type, text, start_time, end_time, confidence
+                FROM segments
+                WHERE session_id = 'int_001'
+                ORDER BY sequence_no
+                """
+            ).fetchall()
         self.assertEqual(1, current_revision)
         self.assertEqual("Product Manager", json.loads(raw_json)["session"]["role"])
         self.assertEqual([(1,)], revisions)
         self.assertEqual("complete", qa_status)
         self.assertEqual([("obs_original",)], observations)
         self.assertEqual([("task_shared", "Original task")], tasks)
+        self.assertEqual(segments_before, segments_after)
 
     def test_unknown_segment_reference_rejects_whole_import(self):
         package = self.session_package()

@@ -223,3 +223,47 @@ OK
   legacy rows with a null session ID remain representable under SQLite's
   composite-key semantics and are copied without data loss.
 - No Task 3 report-bundling production code or tests were changed.
+
+## Fix Round 2: Segment Projection Rollback Assertion
+
+### Test Gap Addressed
+
+- The failed-revision rollback test now snapshots the exact ordered segment
+  projection before installing the `RAISE(ABORT)` trigger and compares it with
+  the projection after the failed revision.
+- The comparison covers `segment_id`, `sequence_no`, `speaker_role`,
+  `speaker_label`, `event_type`, verbatim `text`, `start_time`, `end_time`, and
+  `confidence` for every segment in the session.
+- This extends the existing rollback proof for current revision, historical
+  revision JSON, `sessions.raw_json`, QA chains, observations, and growth tasks.
+
+### Fix-Round 2 Evidence
+
+Focused rollback test on Python 3.9.6:
+
+```text
+Ran 1 test in 0.014s
+OK
+```
+
+Focused rollback test on bundled Python 3.12.13:
+
+```text
+/Users/bytedance/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest scripts.test_interview_store.InterviewStoreTests.test_revision_failure_rolls_back_history_and_current_projections
+Ran 1 test in 0.016s
+OK
+```
+
+Full suite on bundled Python 3.12.13:
+
+```text
+/Users/bytedance/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s scripts
+Ran 61 tests in 0.765s
+OK
+```
+
+### Outcome
+
+- The new assertion passed immediately as a characterization of the existing
+  transaction boundary; no production change was required.
+- No Task 3 report-bundling production code or tests were changed.

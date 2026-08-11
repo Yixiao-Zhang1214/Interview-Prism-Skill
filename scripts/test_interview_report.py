@@ -1,9 +1,11 @@
+import copy
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -19,6 +21,7 @@ from interview_report import (
     render_frequent_questions_text,
     render_radar_svg,
     render_single_text,
+    write_artifact_bundle,
 )
 from interview_store import import_session, soft_delete_session
 
@@ -407,6 +410,134 @@ class ReportCliTests(unittest.TestCase):
             self.assertIn(
                 "项目解决了什么需求？",
                 (output_dir / "IP-R-20260702-1330-qa-original.md").read_text(encoding="utf-8"),
+            )
+
+    def test_bundle_rejects_duplicate_source_without_artifacts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "library"
+            output_dir = root / "outputs"
+            existing = sample_package(session_id="existing_session")
+            rejected = copy.deepcopy(existing)
+            rejected["session"]["id"] = "rejected_session"
+            rejected["growth_tasks"][0]["task_id"] = "task_rejected_session"
+            package_path = root / "rejected.json"
+            package_path.write_text(
+                json.dumps(rejected, ensure_ascii=False), encoding="utf-8"
+            )
+            import_session(data_dir, existing)
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPORT_SCRIPT),
+                    "bundle",
+                    "--file",
+                    str(package_path),
+                    "--data-dir",
+                    str(data_dir),
+                    "--output-dir",
+                    str(output_dir),
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("existing_session", result.stderr)
+            self.assertFalse(output_dir.exists())
+
+    def test_bundle_staging_failure_preserves_completed_artifacts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            package = sample_package()
+            package_path = root / "source.json"
+            data_dir = root / "library"
+            output_dir = root / "outputs"
+            output_dir.mkdir()
+            completed = output_dir / "completed-report.md"
+            completed.write_text("previous complete report\n", encoding="utf-8")
+            package_path.write_text(
+                json.dumps(package, ensure_ascii=False), encoding="utf-8"
+            )
+            original_write_text = Path.write_text
+
+            def fail_qa_write(path, content, *args, **kwargs):
+                if path.name.endswith("-qa-original.md"):
+                    raise OSError("simulated staging failure")
+                return original_write_text(path, content, *args, **kwargs)
+
+            with patch.object(Path, "write_text", new=fail_qa_write):
+                with self.assertRaisesRegex(OSError, "simulated staging failure"):
+                    write_artifact_bundle(
+                        str(package_path), str(data_dir), str(output_dir)
+                    )
+
+            self.assertEqual(
+                {item.name for item in output_dir.iterdir()},
+                {"completed-report.md"},
+            )
+            self.assertEqual(
+                completed.read_text(encoding="utf-8"), "previous complete report\n"
+            )
+
+    def test_bundle_revision_uses_current_session_and_cumulative_ledger(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original = sample_package(session_id="revised_session")
+            revised = copy.deepcopy(original)
+            revised["growth_tasks"][0]["title"] = "修订后的成长任务"
+            original_path = root / "original.json"
+            revised_path = root / "revised.json"
+            data_dir = root / "library"
+            output_dir = root / "outputs"
+            original_path.write_text(
+                json.dumps(original, ensure_ascii=False), encoding="utf-8"
+            )
+            revised_path.write_text(
+                json.dumps(revised, ensure_ascii=False), encoding="utf-8"
+            )
+
+            first = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPORT_SCRIPT),
+                    "bundle",
+                    "--file",
+                    str(original_path),
+                    "--data-dir",
+                    str(data_dir),
+                    "--output-dir",
+                    str(output_dir),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            second = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPORT_SCRIPT),
+                    "bundle",
+                    "--file",
+                    str(revised_path),
+                    "--data-dir",
+                    str(data_dir),
+                    "--output-dir",
+                    str(output_dir),
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(
+                json.loads(
+                    (output_dir / "IP-R-20260702-1330-session.json").read_text(
+                        encoding="utf-8"
+                    )
+                ),
+                revised,
             )
 
     def test_single_cli_defaults_to_markdown_text(self):

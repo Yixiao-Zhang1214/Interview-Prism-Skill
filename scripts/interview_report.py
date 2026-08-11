@@ -4,8 +4,10 @@ from datetime import datetime
 import json
 import math
 from pathlib import Path
+import shutil
 import sqlite3
 import sys
+import tempfile
 from typing import Dict, List, Optional
 from xml.sax.saxutils import escape
 
@@ -852,8 +854,27 @@ def _resolve_artifact_stem(output_dir: Path, package: dict) -> str:
 def write_artifact_bundle(file_path: str, data_dir: str, output_dir: str) -> List[Path]:
     package = json.loads(Path(file_path).read_text(encoding="utf-8"))
     validate_session_package(package)
-    import_session(data_dir, package)
-    packages = load_session_packages(data_dir, package["session"]["source_type"])
+    import_result = import_session(data_dir, package)
+    if not isinstance(import_result, dict):
+        raise ValueError("import_session returned an invalid result")
+    status = import_result.get("status")
+    if status == "duplicate_source":
+        existing_session_id = import_result.get("existing_session_id")
+        raise ValueError(
+            f"duplicate source already belongs to session: {existing_session_id}"
+        )
+    if status not in {"imported", "unchanged", "revised"}:
+        raise ValueError(f"unknown import result status: {status}")
+
+    session_id = import_result.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        raise ValueError("import result is missing session_id")
+    source_type = package["session"]["source_type"]
+    current_packages = load_session_packages(data_dir, source_type, [session_id])
+    if len(current_packages) != 1:
+        raise ValueError(f"canonical session not found: {session_id}")
+    package = current_packages[0]
+    packages = load_session_packages(data_dir, source_type)
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
     stem = _resolve_artifact_stem(destination, package)
@@ -866,12 +887,40 @@ def write_artifact_bundle(file_path: str, data_dir: str, output_dir: str) -> Lis
         f"{stem}-frequent-questions.md": render_frequent_questions_text(packages),
         radar_name: render_radar_svg(package),
     }
-    written = []
-    for name, content in contents.items():
-        path = destination / name
-        path.write_text(content, encoding="utf-8")
-        written.append(path)
-    return written
+    temporary = Path(tempfile.mkdtemp(prefix=".interview-report-", dir=destination))
+    previous = temporary / "previous"
+    replaced = []
+    published = []
+    try:
+        for name, content in contents.items():
+            (temporary / name).write_text(content, encoding="utf-8")
+
+        previous.mkdir()
+        for name in contents:
+            final_path = destination / name
+            if final_path.exists():
+                final_path.replace(previous / name)
+                replaced.append((previous / name, final_path))
+        for name in contents:
+            staged_path = temporary / name
+            final_path = destination / name
+            staged_path.replace(final_path)
+            published.append(final_path)
+    except Exception:
+        for final_path in published:
+            try:
+                final_path.unlink()
+            except OSError:
+                pass
+        for previous_path, final_path in replaced:
+            try:
+                previous_path.replace(final_path)
+            except OSError:
+                pass
+        raise
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+    return [destination / name for name in contents]
 
 
 def _build_parser():

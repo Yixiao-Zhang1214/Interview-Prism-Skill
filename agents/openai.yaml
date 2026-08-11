@@ -1,0 +1,4 @@
+interface:
+  display_name: "Interview Prism｜面试棱镜"
+  short_description: "复盘真实面试、管理长期能力证据并进行严格隔离的模拟面试训练"
+  default_prompt: "Use $interview-growth-coach to turn this interview transcript into an evidence-based review and growth plan."

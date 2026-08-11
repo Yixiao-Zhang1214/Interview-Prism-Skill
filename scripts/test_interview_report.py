@@ -21,7 +21,6 @@ from interview_report import (
     render_ability_model_text,
     render_comparison_text,
     render_frequent_questions_text,
-    render_radar_svg,
     render_single_text,
     write_artifact_bundle,
 )
@@ -135,7 +134,7 @@ class SingleReportTests(unittest.TestCase):
         package["growth_tasks"][0]["real_validation_condition"] = (
             "后续真实面试中 problem_framing 达到 4 级。"
         )
-        text = render_single_text(package, "IP-R-20260702-1330-ability-radar.svg")
+        text = render_single_text(package)
 
         labels = [
             "# 面试复盘",
@@ -151,7 +150,7 @@ class SingleReportTests(unittest.TestCase):
         self.assertIn("现有证据不足，无法判断是否通过", text)
         self.assertNotIn("模拟结果，不是实际面试结果", text)
         self.assertNotIn("暂时保留", text)
-        self.assertIn("![能力雷达图](IP-R-20260702-1330-ability-radar.svg)", text)
+        self.assertIn("```mermaid", text)
         self.assertIn("**真正考察点（推断）**", text)
         self.assertIn("**答得好的地方**", text)
         self.assertIn("**没有答够**", text)
@@ -163,30 +162,6 @@ class SingleReportTests(unittest.TestCase):
         self.assertNotIn("problem_framing", text)
         self.assertNotIn("case_evidence", text)
         self.assertNotIn("<section", text)
-
-    def test_radar_svg_uses_only_observed_dimensions(self):
-        package = sample_package()
-        observations = package["assessments"][0]["competency_observations"]
-        observations.extend(
-            [
-                {"observation_id": "obs_002", "dimension": "structured_communication", "level": 3, "evidence_segment_ids": ["seg_002"], "confidence": "high"},
-                {"observation_id": "obs_003", "dimension": "data_and_outcome_evidence", "level": 2, "evidence_segment_ids": ["seg_002"], "confidence": "high"},
-            ]
-        )
-
-        svg = render_radar_svg(package)
-
-        self.assertIn("<svg", svg)
-        self.assertIn("问题定义 4.0", svg)
-        self.assertIn("表达结构 3.0", svg)
-        self.assertIn("数据与结果 2.0", svg)
-        self.assertNotIn("协作与推动", svg)
-
-    def test_radar_svg_refuses_misleading_polygon_with_too_few_dimensions(self):
-        svg = render_radar_svg(sample_package())
-
-        self.assertIn("至少需要 3 个有证据的能力维度", svg)
-        self.assertNotIn("class=\"score-polygon\"", svg)
 
     def test_first_session_history_documents_are_honest(self):
         package = sample_package()
@@ -245,7 +220,7 @@ class SingleReportTests(unittest.TestCase):
         text = render_single_text(package)
 
         for number in range(1, 5):
-            self.assertIn(f"### 第{number}题：", text)
+            self.assertIn(f"【第{number}问】", text)
         self.assertEqual(text.count("**真正考察点（推断）**"), 4)
 
     def test_overall_interviewer_review_synthesizes_strength_risk_and_follow_up(self):
@@ -281,14 +256,6 @@ class PublicPackageRenderValidationTests(unittest.TestCase):
 
     def test_frequent_questions_rejects_invalid_package_at_public_boundary(self):
         self.assert_invalid_package_is_rejected(render_frequent_questions_text)
-
-    def test_radar_svg_rejects_invalid_package_at_public_boundary(self):
-        package = sample_package()
-        package["question_analyses"][0]["qa_chain_id"] = "qa_missing"
-
-        with self.assertRaisesRegex(ValueError, "unknown qa_chain"):
-            render_radar_svg(package)
-
 
 class ComparisonReportTests(unittest.TestCase):
     def test_comparison_text_uses_deterministic_same_ledger_facts(self):
@@ -425,11 +392,10 @@ class ReportCliTests(unittest.TestCase):
                 "IP-R-20260702-1330-session.json",
                 "IP-R-20260702-1330-ability-model.md",
                 "IP-R-20260702-1330-frequent-questions.md",
-                "IP-R-20260702-1330-ability-radar.svg",
             }
             self.assertEqual({item.name for item in output_dir.iterdir()}, expected)
             analysis = (output_dir / "IP-R-20260702-1330-analysis.md").read_text(encoding="utf-8")
-            self.assertIn("![能力雷达图](IP-R-20260702-1330-ability-radar.svg)", analysis)
+            self.assertIn("```mermaid", analysis)
             self.assertEqual(
                 json.loads((output_dir / "IP-R-20260702-1330-session.json").read_text(encoding="utf-8")),
                 package,

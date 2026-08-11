@@ -2,7 +2,6 @@ import argparse
 from collections import Counter
 from datetime import datetime
 import json
-import math
 from pathlib import Path
 import shutil
 import sqlite3
@@ -145,8 +144,8 @@ def _comparison_session_fact(package: dict) -> dict:
     for assessment in package.get("assessments", []):
         chain_id = assessment.get("qa_chain_id")
         question = (
-            _question_text(chains.get(chain_id, {}), segments)
-            or analyses.get(chain_id, {}).get("surface_question")
+            analyses.get(chain_id, {}).get("surface_question")
+            or _question_text(chains.get(chain_id, {}), segments)
             or "问题未命名"
         )
         for observation in assessment.get("competency_observations", []):
@@ -381,77 +380,6 @@ def artifact_stem(session: dict) -> str:
     return f"IP-{ledger}-{occurred:%Y%m%d-%H%M}"
 
 
-def _point(center_x, center_y, radius, angle):
-    return (
-        center_x + radius * math.cos(angle),
-        center_y + radius * math.sin(angle),
-    )
-
-
-def _svg_points(points):
-    return " ".join(f"{x:.1f},{y:.1f}" for x, y in points)
-
-
-def render_radar_svg(package: dict) -> str:
-    validate_session_package(package)
-    rows = build_single_view(package)["ability_rows"]
-    width, height = 760, 560
-    if len(rows) < 3:
-        return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="220" viewBox="0 0 {width} 220" role="img" aria-label="能力雷达图证据不足">
-<rect width="100%" height="100%" rx="20" fill="#f5f5f7"/>
-<text x="380" y="96" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="22" font-weight="600" fill="#1d1d1f">能力雷达图</text>
-<text x="380" y="136" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="16" fill="#6e6e73">至少需要 3 个有证据的能力维度；缺失维度不会按 0 分处理。</text>
-</svg>'''
-
-    center_x, center_y, radius = 380, 270, 160
-    angles = [(-math.pi / 2) + index * 2 * math.pi / len(rows) for index in range(len(rows))]
-    rings = []
-    for level in range(1, 6):
-        ring_points = [
-            _point(center_x, center_y, radius * level / 5, angle)
-            for angle in angles
-        ]
-        rings.append(f'<polygon points="{_svg_points(ring_points)}"/>')
-    axes = []
-    labels = []
-    for row, angle in zip(rows, angles):
-        axis_x, axis_y = _point(center_x, center_y, radius, angle)
-        label_x, label_y = _point(center_x, center_y, radius + 66, angle)
-        anchor = "middle"
-        if label_x < center_x - 20:
-            anchor = "end"
-        elif label_x > center_x + 20:
-            anchor = "start"
-        axes.append(f'<line x1="{center_x}" y1="{center_y}" x2="{axis_x:.1f}" y2="{axis_y:.1f}"/>')
-        score_label = f'{row["average"]:.1f}'
-        labels.append(
-            f'<text x="{label_x:.1f}" y="{label_y:.1f}" text-anchor="{anchor}">'
-            f'{_text(row["label"])} {_text(score_label)}</text>'
-        )
-    score_points = [
-        _point(center_x, center_y, radius * row["average"] / 5, angle)
-        for row, angle in zip(rows, angles)
-    ]
-    score_dots = "".join(
-        f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4"/>' for x, y in score_points
-    )
-    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="本次面试能力雷达图">
-<style>
-text {{ font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; font-size: 15px; font-weight: 600; fill: #3a3a3c; }}
-.grid polygon, .axes line {{ fill: none; stroke: #c7c7cc; stroke-width: 1; }}
-.score-polygon {{ fill: #5e5ce6; fill-opacity: .22; stroke: #5e5ce6; stroke-width: 3; }}
-.score-dots circle {{ fill: #5e5ce6; }}
-@media (prefers-color-scheme: dark) {{ text {{ fill: #f2f2f7; }} .grid polygon, .axes line {{ stroke: #636366; }} .score-polygon {{ fill: #8e8cff; stroke: #a09eff; }} .score-dots circle {{ fill: #a09eff; }} }}
-</style>
-<g class="grid">{''.join(rings)}</g>
-<g class="axes">{''.join(axes)}</g>
-<polygon class="score-polygon" points="{_svg_points(score_points)}"/>
-<g class="score-dots">{score_dots}</g>
-<g class="labels">{''.join(labels)}</g>
-<text x="380" y="538" text-anchor="middle" font-size="13" font-weight="400">仅展示有证据的维度 · 满分 5 分</text>
-</svg>'''
-
-
 def _overall_interviewer_thought(review: dict, reactions: dict) -> list[str]:
     summaries = [
         str(item).strip()
@@ -503,13 +431,13 @@ def _overall_interviewer_thought(review: dict, reactions: dict) -> list[str]:
         parts.append(f"如果进入下一轮，我会继续追问：{'；'.join(next_intents)}")
 
     if tendency:
-        parts.append(f"综合判断：{tendency}")
+        parts.append(f"模拟综合判断（仅供复盘）：{tendency}")
     if not parts:
         return ["现有信息不足，暂时无法形成整体模拟评价"]
     return parts
 
 
-def render_single_text(package: dict, radar_image: Optional[str] = None) -> str:
+def render_single_text(package: dict) -> str:
     validate_session_package(package)
     view = build_single_view(package)
     review = view["review"]
@@ -537,7 +465,7 @@ def render_single_text(package: dict, radar_image: Optional[str] = None) -> str:
     result = review.get("simulated_overall_result", {})
     tendency = result.get("tendency", "未提供")
     for label, chain_id in (
-        ("最佳回答", review.get("best_answer_qa_chain_id")),
+        ("最佳回答对应问题", review.get("best_answer_qa_chain_id")),
         ("最高风险", review.get("highest_risk_qa_chain_id")),
     ):
         question = (
@@ -556,9 +484,26 @@ def render_single_text(package: dict, radar_image: Optional[str] = None) -> str:
     )
 
     lines.extend(["", "## 能力快照", ""])
-    if radar_image:
-        lines.extend([f"![能力雷达图]({radar_image})", ""])
     if view["ability_rows"]:
+        chart_labels = ", ".join(
+            json.dumps(row["label"], ensure_ascii=False)
+            for row in view["ability_rows"]
+        )
+        chart_scores = ", ".join(
+            f'{row["average"]:.1f}' for row in view["ability_rows"]
+        )
+        lines.extend(
+            [
+                "```mermaid",
+                "xychart-beta",
+                '    title "本次面试能力快照"',
+                f"    x-axis [{chart_labels}]",
+                '    y-axis "分数" 0 --> 5',
+                f"    bar [{chart_scores}]",
+                "```",
+                "",
+            ]
+        )
         lines.extend(["| 能力 | 分数 | 证据 |", "|---|---:|---:|"])
         lines.extend(
             f'| {row["label"]} | {row["average"]:.1f} / 5 | {row["evidence_count"]} 条 |'
@@ -582,7 +527,7 @@ def render_single_text(package: dict, radar_image: Optional[str] = None) -> str:
         reaction = reactions.get(chain_id, {})
         lines.extend(
             [
-                f'### 第{chain.get("sequence_no")}题：{analyses.get(chain_id, {}).get("surface_question") or _question_text(chain, segments)}',
+                f'### 【第{chain.get("sequence_no")}问】{analyses.get(chain_id, {}).get("surface_question") or _question_text(chain, segments)}',
                 "",
                 f'> **真正考察点（推断）**：{focus.get("description") or "暂无推断。"}',
                 "",
@@ -598,15 +543,15 @@ def render_single_text(package: dict, radar_image: Optional[str] = None) -> str:
         )
         lines.extend(
             [
-                "**答得好的地方**",
+                "- **答得好的地方**",
                 "",
                 f"{effective_text}。" if effective_text else "暂无明确加分点。",
                 "",
-                "**没有答够**",
+                "- **没有答够**",
                 "",
                 f"{missing_text}。" if missing_text else "暂无明确缺口。",
                 "",
-                "**下次怎么答**",
+                "- **下次怎么答**",
                 "",
                 _improvement_sentence(assessment),
                 "",
@@ -885,14 +830,12 @@ def write_artifact_bundle(file_path: str, data_dir: str, output_dir: str) -> Lis
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
     stem = _resolve_artifact_stem(destination, package)
-    radar_name = f"{stem}-ability-radar.svg"
     contents = {
-        f"{stem}-analysis.md": render_single_text(package, radar_name),
+        f"{stem}-analysis.md": render_single_text(package),
         f"{stem}-qa-original.md": render_original_qa(data_dir, package["session"]["id"]),
         f"{stem}-session.json": json.dumps(package, ensure_ascii=False, indent=2) + "\n",
         f"{stem}-ability-model.md": render_ability_model_text(packages),
         f"{stem}-frequent-questions.md": render_frequent_questions_text(packages),
-        radar_name: render_radar_svg(package),
     }
     temporary = Path(tempfile.mkdtemp(prefix=".interview-report-", dir=destination))
     previous = temporary / "previous"

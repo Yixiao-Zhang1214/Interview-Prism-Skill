@@ -36,6 +36,7 @@ Hard rules:
 - Do not infer honesty checks, personality, emotion, or protected traits.
 - Avoid certainty language such as “the interviewer definitely wants.”
 - primary_inferred_focus, alternative_explanation, and likely_follow_up_direction may be null.
+- `surface_question` must be a concise, complete, written-form question. Remove greetings, repetition, filler words, speech errors, and irrelevant setup without changing the original intent. Keep the verbatim wording only in the referenced question segments; do not copy colloquial transcript text directly into the key-question title.
 
 Output data:
 {

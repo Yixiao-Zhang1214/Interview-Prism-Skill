@@ -33,7 +33,7 @@ Every accepted interview, including the first, produces one shared timestamp ste
 - `IP-{R|M}-YYYYMMDD-HHMM-ability-model.md`
 - `IP-{R|M}-YYYYMMDD-HHMM-frequent-questions.md`
 
-The analysis embeds `IP-{R|M}-YYYYMMDD-HHMM-ability-radar.svg`. Use interview occurrence time, never processing time. A first-session ability model explicitly has no trend; a first-session question record explicitly has no high-frequency claim. Later bundles rebuild the cumulative documents from all non-deleted sessions in the same ledger.
+The analysis embeds a Mermaid ability chart directly in the Markdown report. A first-session ability model explicitly has no trend; a first-session question record explicitly has no high-frequency claim. Later bundles rebuild the cumulative documents from all non-deleted sessions in the same ledger.
 
 ## Comparison order
 

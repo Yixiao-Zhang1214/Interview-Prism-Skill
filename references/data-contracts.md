@@ -119,6 +119,8 @@ Every referenced segment must exist. Within one session, a segment enters exactl
 
 ## Question Analysis Contract
 
+`surface_question` is the normalized question used for report display and cross-session grouping. Remove colloquial fillers, repetition, speech errors, and irrelevant setup while preserving the original intent. The verbatim wording remains available through `question_segment_ids`.
+
 ```json
 {
   "qa_chain_id": "qa_001",

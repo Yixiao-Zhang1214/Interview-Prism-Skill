@@ -545,8 +545,8 @@ class InterviewStoreTests(unittest.TestCase):
             connection.execute(
                 """
                 CREATE TRIGGER abort_failed_revision
-                BEFORE INSERT ON growth_tasks
-                WHEN NEW.title = 'Fail revision'
+                BEFORE INSERT ON segments
+                WHEN NEW.session_id = 'int_001' AND NEW.segment_id = 'seg_001'
                 BEGIN
                     SELECT RAISE(ABORT, 'forced revision failure');
                 END
@@ -557,7 +557,7 @@ class InterviewStoreTests(unittest.TestCase):
         revised["qa_chains"][0]["answer_status"] = "partial"
         self.add_observation(revised, "obs_revised", 5)
         revised["growth_tasks"] = [
-            {"task_id": "task_shared", "title": "Fail revision", "status": "open"}
+            {"task_id": "task_shared", "title": "Revised task", "status": "open"}
         ]
 
         with self.assertRaisesRegex(sqlite3.IntegrityError, "forced revision failure"):

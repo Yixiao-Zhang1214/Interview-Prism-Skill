@@ -267,3 +267,50 @@ OK
 - The new assertion passed immediately as a characterization of the existing
   transaction boundary; no production change was required.
 - No Task 3 report-bundling production code or tests were changed.
+
+## Fix Round 3: Segment-Stage Revision Abort
+
+### Rollback Test Correction
+
+- The failed-revision trigger now runs `BEFORE INSERT ON segments` for
+  `seg_001`, rather than failing later during growth-task insertion.
+- Production deletes the current growth tasks, observations, QA chains, and
+  segments before calling the projection insertion helper. The trigger therefore
+  aborts only after all current projections have been deleted and segment
+  reconstruction has begun.
+- The revised growth task uses a normal `Revised task` title, removing the old
+  growth-task trigger sentinel and making the segment failure point explicit.
+- After the real `RAISE(ABORT)`, the test compares the exact pre/post segment
+  rows and also confirms original session JSON, current revision, revision
+  history, QA status, observation, and growth-task projection.
+
+### Fix-Round 3 Evidence
+
+Focused segment-stage rollback test on Python 3.9.6:
+
+```text
+Ran 1 test in 0.015s
+OK
+```
+
+Focused segment-stage rollback test on bundled Python 3.12.13:
+
+```text
+/Users/bytedance/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest scripts.test_interview_store.InterviewStoreTests.test_revision_failure_rolls_back_history_and_current_projections
+Ran 1 test in 0.016s
+OK
+```
+
+Full suite on bundled Python 3.12.13:
+
+```text
+/Users/bytedance/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s scripts
+Ran 61 tests in 0.815s
+OK
+```
+
+### Outcome
+
+- The corrected failure-path test proves rollback from a destructive
+  intermediate state and passes without production changes.
+- No mocks or Task 3 production/test changes were introduced.

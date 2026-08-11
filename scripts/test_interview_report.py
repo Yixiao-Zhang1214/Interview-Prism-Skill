@@ -481,56 +481,142 @@ class ReportCliTests(unittest.TestCase):
                 completed.read_text(encoding="utf-8"), "previous complete report\n"
             )
 
-    def test_bundle_revision_uses_current_session_and_cumulative_ledger(self):
+    def test_bundle_publication_failure_restores_complete_previous_bundle(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            original = sample_package(session_id="revised_session")
-            revised = copy.deepcopy(original)
+            package = sample_package(session_id="rollback_session")
+            revised = copy.deepcopy(package)
             revised["growth_tasks"][0]["title"] = "修订后的成长任务"
-            original_path = root / "original.json"
+            package_path = root / "source.json"
             revised_path = root / "revised.json"
             data_dir = root / "library"
             output_dir = root / "outputs"
-            original_path.write_text(
-                json.dumps(original, ensure_ascii=False), encoding="utf-8"
+            package_path.write_text(
+                json.dumps(package, ensure_ascii=False), encoding="utf-8"
             )
             revised_path.write_text(
                 json.dumps(revised, ensure_ascii=False), encoding="utf-8"
             )
+            write_artifact_bundle(str(package_path), str(data_dir), str(output_dir))
+            previous_contents = {
+                path.name: path.read_bytes() for path in output_dir.iterdir()
+            }
+            original_replace = Path.replace
 
-            first = subprocess.run(
-                [
-                    sys.executable,
-                    str(REPORT_SCRIPT),
-                    "bundle",
-                    "--file",
-                    str(original_path),
-                    "--data-dir",
-                    str(data_dir),
-                    "--output-dir",
-                    str(output_dir),
-                ],
-                capture_output=True,
-                text=True,
-            )
-            second = subprocess.run(
-                [
-                    sys.executable,
-                    str(REPORT_SCRIPT),
-                    "bundle",
-                    "--file",
-                    str(revised_path),
-                    "--data-dir",
-                    str(data_dir),
-                    "--output-dir",
-                    str(output_dir),
-                ],
-                capture_output=True,
-                text=True,
+            def fail_final_publication(path, target):
+                if (
+                    path.parent.name.startswith(".interview-report-")
+                    and path.parent.name != "previous"
+                    and path.name.endswith("-ability-model.md")
+                ):
+                    raise OSError("simulated final publication failure")
+                return original_replace(path, target)
+
+            with patch.object(Path, "replace", new=fail_final_publication):
+                with self.assertRaisesRegex(
+                    OSError, "simulated final publication failure"
+                ):
+                    write_artifact_bundle(
+                        str(revised_path), str(data_dir), str(output_dir)
+                    )
+
+            self.assertEqual(
+                {path.name: path.read_bytes() for path in output_dir.iterdir()},
+                previous_contents,
             )
 
-            self.assertEqual(first.returncode, 0, first.stderr)
-            self.assertEqual(second.returncode, 0, second.stderr)
+    def test_bundle_rollback_failure_retains_recovery_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            package = sample_package(session_id="recovery_session")
+            revised = copy.deepcopy(package)
+            revised["growth_tasks"][0]["title"] = "修订后的成长任务"
+            package_path = root / "source.json"
+            revised_path = root / "revised.json"
+            data_dir = root / "library"
+            output_dir = root / "outputs"
+            package_path.write_text(
+                json.dumps(package, ensure_ascii=False), encoding="utf-8"
+            )
+            revised_path.write_text(
+                json.dumps(revised, ensure_ascii=False), encoding="utf-8"
+            )
+            write_artifact_bundle(str(package_path), str(data_dir), str(output_dir))
+            previous_contents = {
+                path.name: path.read_bytes() for path in output_dir.iterdir()
+            }
+            original_replace = Path.replace
+            retained_name = "IP-R-20260702-1330-qa-original.md"
+
+            def fail_publication_and_restore(path, target):
+                if (
+                    path.parent.name.startswith(".interview-report-")
+                    and path.parent.name != "previous"
+                    and path.name.endswith("-ability-model.md")
+                ):
+                    raise OSError("simulated final publication failure")
+                if path.parent.name == "previous" and path.name == retained_name:
+                    raise OSError("simulated rollback restoration failure")
+                return original_replace(path, target)
+
+            with patch.object(Path, "replace", new=fail_publication_and_restore):
+                with self.assertRaisesRegex(
+                    OSError, "recovery directory:"
+                ) as caught:
+                    write_artifact_bundle(
+                        str(revised_path), str(data_dir), str(output_dir)
+                    )
+
+            recovery_path = Path(
+                str(caught.exception)
+                .split("recovery directory: ", 1)[1]
+                .split("; errors:", 1)[0]
+            )
+            self.assertTrue(recovery_path.is_dir())
+            self.assertEqual(
+                (recovery_path / "previous" / retained_name).read_bytes(),
+                previous_contents[retained_name],
+            )
+            self.assertEqual(
+                {
+                    path.name: path.read_bytes()
+                    for path in output_dir.iterdir()
+                    if path.name not in {recovery_path.name, retained_name}
+                },
+                {
+                    name: content
+                    for name, content in previous_contents.items()
+                    if name != retained_name
+                },
+            )
+
+    def test_bundle_revision_uses_persisted_current_cumulative_ledger(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original = sample_package(session_id="revised_session")
+            revised = copy.deepcopy(original)
+            revised["assessments"][0]["competency_observations"][0]["level"] = 5
+            revised["question_analyses"][0]["surface_question"] = "修订后的问题"
+            revised["knowledge_candidates"][0]["canonical_question"] = "修订后的问题"
+            other = sample_package(session_id="other_session")
+            other_question = "另一个同账本问题"
+            other["source"]["blocks"][0]["text"] = other_question
+            other["segments"][0]["text"] = other_question
+            other["segments"][0]["end_char"] = len(other_question)
+            other["question_analyses"][0]["surface_question"] = other_question
+            other["knowledge_candidates"][0]["canonical_question"] = other_question
+            other["growth_tasks"][0]["task_id"] = "task_other_session"
+            other["assessments"][0]["competency_observations"][0]["level"] = 2
+            revised_path = root / "revised.json"
+            data_dir = root / "library"
+            output_dir = root / "outputs"
+            revised_path.write_text(
+                json.dumps(revised, ensure_ascii=False), encoding="utf-8"
+            )
+            import_session(data_dir, original)
+            import_session(data_dir, other)
+            write_artifact_bundle(str(revised_path), str(data_dir), str(output_dir))
+
             self.assertEqual(
                 json.loads(
                     (output_dir / "IP-R-20260702-1330-session.json").read_text(
@@ -539,6 +625,51 @@ class ReportCliTests(unittest.TestCase):
                 ),
                 revised,
             )
+            self.assertIn(
+                "| 问题定义 | 3.50 / 5 | 2 | 2 |",
+                (output_dir / "IP-R-20260702-1330-ability-model.md").read_text(
+                    encoding="utf-8"
+                ),
+            )
+            frequent_questions = (
+                output_dir / "IP-R-20260702-1330-frequent-questions.md"
+            ).read_text(encoding="utf-8")
+            self.assertIn("修订后的问题", frequent_questions)
+            self.assertNotIn("项目解决了什么需求？", frequent_questions)
+            self.assertIn(other_question, frequent_questions)
+
+    def test_bundle_same_minute_collision_and_rerun_keep_compatible_stems(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first = sample_package(session_id="same_minute_first")
+            second = copy.deepcopy(first)
+            second_question = "同一分钟的另一道问题"
+            second["session"]["id"] = "same_minute_second"
+            second["growth_tasks"][0]["task_id"] = "task_same_minute_second"
+            second["source"]["blocks"][0]["text"] = second_question
+            second["segments"][0]["text"] = second_question
+            second["segments"][0]["end_char"] = len(second_question)
+            second["question_analyses"][0]["surface_question"] = second_question
+            second["knowledge_candidates"][0]["canonical_question"] = second_question
+            first_path = root / "first.json"
+            second_path = root / "second.json"
+            data_dir = root / "library"
+            output_dir = root / "outputs"
+            first_path.write_text(
+                json.dumps(first, ensure_ascii=False), encoding="utf-8"
+            )
+            second_path.write_text(
+                json.dumps(second, ensure_ascii=False), encoding="utf-8"
+            )
+
+            write_artifact_bundle(str(first_path), str(data_dir), str(output_dir))
+            write_artifact_bundle(str(second_path), str(data_dir), str(output_dir))
+            write_artifact_bundle(str(first_path), str(data_dir), str(output_dir))
+
+            names = {path.name for path in output_dir.iterdir()}
+            self.assertIn("IP-R-20260702-1330-analysis.md", names)
+            self.assertIn("IP-R-20260702-1330-01-analysis.md", names)
+            self.assertFalse(any("-02-" in name for name in names))
 
     def test_single_cli_defaults_to_markdown_text(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -891,6 +891,7 @@ def write_artifact_bundle(file_path: str, data_dir: str, output_dir: str) -> Lis
     previous = temporary / "previous"
     replaced = []
     published = []
+    retain_temporary = False
     try:
         for name, content in contents.items():
             (temporary / name).write_text(content, encoding="utf-8")
@@ -906,20 +907,40 @@ def write_artifact_bundle(file_path: str, data_dir: str, output_dir: str) -> Lis
             final_path = destination / name
             staged_path.replace(final_path)
             published.append(final_path)
-    except Exception:
+    except Exception as publication_error:
+        rollback_errors = []
+        previous_final_paths = {final_path for _, final_path in replaced}
         for final_path in published:
+            if final_path in previous_final_paths:
+                continue
             try:
                 final_path.unlink()
-            except OSError:
-                pass
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                rollback_errors.append(error)
         for previous_path, final_path in replaced:
             try:
                 previous_path.replace(final_path)
-            except OSError:
-                pass
+            except OSError as error:
+                rollback_errors.append(error)
+        if rollback_errors:
+            recovery = destination / f"{temporary.name}-recovery"
+            try:
+                temporary.replace(recovery)
+            except OSError as error:
+                rollback_errors.append(error)
+                recovery = temporary
+            retain_temporary = True
+            details = "; ".join(str(error) for error in rollback_errors)
+            raise OSError(
+                "artifact publication failed and rollback was incomplete; "
+                f"recovery directory: {recovery}; errors: {details}"
+            ) from publication_error
         raise
     finally:
-        shutil.rmtree(temporary, ignore_errors=True)
+        if not retain_temporary:
+            shutil.rmtree(temporary, ignore_errors=True)
     return [destination / name for name in contents]
 
 

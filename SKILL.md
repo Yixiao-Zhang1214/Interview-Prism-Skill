@@ -9,6 +9,8 @@ description: Use when users want to organize interview transcripts or host-provi
 
 Turn interview material into traceable evidence, separate formal performance from training, and convert repeated gaps into testable growth tasks. Treat the local database as the fact ledger and model outputs as evidence-linked proposals.
 
+The local manager supports Python 3.9+ and has no third-party runtime dependencies.
+
 ## Start With Capability Checks
 
 1. Inspect the supplied material and available host tools.

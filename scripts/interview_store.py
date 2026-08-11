@@ -76,6 +76,24 @@ CREATE TABLE IF NOT EXISTS growth_tasks (
 );
 """
 
+GROWTH_TASK_STATUSES = {
+    "open",
+    "in_progress",
+    "training_passed",
+    "waiting_real_validation",
+    "real_validated",
+    "archived",
+}
+
+GROWTH_TASK_TYPES = {
+    "knowledge",
+    "case_material",
+    "answer_rebuild",
+    "compression",
+    "pressure_follow_up",
+    "real_world_validation",
+}
+
 
 def initialize_library(data_dir):
     data_path = Path(data_dir)
@@ -105,6 +123,47 @@ def _observations(package):
     for assessment in package.get("assessments", []):
         for observation in assessment.get("competency_observations", []):
             yield observation
+
+
+def _validate_semantic_references(value, qa_chain_ids, segment_ids):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in {
+                "qa_chain_id",
+                "best_answer_qa_chain_id",
+                "highest_risk_qa_chain_id",
+            }:
+                if item not in qa_chain_ids:
+                    raise ValueError(f"unknown qa_chain: {item}")
+            elif key in {"qa_chain_ids", "source_qa_chain_ids"}:
+                for chain_id in item:
+                    if chain_id not in qa_chain_ids:
+                        raise ValueError(f"unknown qa_chain: {chain_id}")
+            elif key == "evidence_segment_ids":
+                for segment_id in item:
+                    if segment_id not in segment_ids:
+                        raise ValueError(f"unknown segment: {segment_id}")
+            else:
+                _validate_semantic_references(item, qa_chain_ids, segment_ids)
+    elif isinstance(value, list):
+        for item in value:
+            _validate_semantic_references(item, qa_chain_ids, segment_ids)
+
+
+def _validate_qa_chain_semantic_records(
+    records, record_type, qa_chain_ids, segment_ids, require_simulation=False
+):
+    seen_chain_ids = set()
+    for record in records:
+        chain_id = record.get("qa_chain_id")
+        if chain_id not in qa_chain_ids:
+            raise ValueError(f"unknown qa_chain: {chain_id}")
+        if chain_id in seen_chain_ids:
+            raise ValueError(f"duplicate {record_type}: {chain_id}")
+        if require_simulation and record.get("is_simulation") is not True:
+            raise ValueError("simulated_reaction is_simulation must be true")
+        seen_chain_ids.add(chain_id)
+        _validate_semantic_references(record, qa_chain_ids, segment_ids)
 
 
 def validate_session_package(package):
@@ -231,11 +290,41 @@ def validate_session_package(package):
             if segment_id not in segment_ids:
                 raise ValueError(f"unknown segment: {segment_id}")
 
+    _validate_qa_chain_semantic_records(
+        package.get("question_analyses", []),
+        "question_analysis",
+        qa_chain_ids,
+        segment_ids,
+    )
+    _validate_qa_chain_semantic_records(
+        package.get("assessments", []), "assessment", qa_chain_ids, segment_ids
+    )
+    _validate_qa_chain_semantic_records(
+        package.get("simulated_reactions", []),
+        "simulated_reaction",
+        qa_chain_ids,
+        segment_ids,
+        require_simulation=True,
+    )
+    _validate_semantic_references(
+        package.get("session_review", {}), qa_chain_ids, segment_ids
+    )
+
     for task in package.get("growth_tasks", []):
+        _validate_semantic_references(task, qa_chain_ids, segment_ids)
         if task.get("source_type", session["source_type"]) != session["source_type"]:
             raise ValueError("growth task source_type mismatch")
-        if session["source_type"] == "mock" and task.get("status") == "real_validated":
+        status = task.get("status", "open")
+        if status not in GROWTH_TASK_STATUSES:
+            raise ValueError(f"unknown task status: {status}")
+        task_type = task.get("task_type")
+        if task_type is not None and task_type not in GROWTH_TASK_TYPES:
+            raise ValueError(f"unknown task type: {task_type}")
+        if session["source_type"] == "mock" and status == "real_validated":
             raise ValueError("mock task cannot be real_validated")
+
+    for candidate in package.get("knowledge_candidates", []):
+        _validate_semantic_references(candidate, qa_chain_ids, segment_ids)
 
 
 def import_session(data_dir, package):

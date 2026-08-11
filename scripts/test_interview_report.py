@@ -84,6 +84,44 @@ def sample_package(source_type="real", session_id="int_test"):
 
 
 class SingleReportTests(unittest.TestCase):
+    def test_single_text_rejects_invalid_package_at_public_boundary(self):
+        package = sample_package()
+        package["question_analyses"][0]["qa_chain_id"] = "qa_missing"
+
+        with self.assertRaisesRegex(ValueError, "unknown qa_chain"):
+            render_single_text(package)
+
+    def test_single_text_uses_chinese_labels_for_every_canonical_task_status(self):
+        package = sample_package()
+        package["growth_tasks"] = [
+            {
+                "task_id": f"task_{status}",
+                "title": status,
+                "status": status,
+                "acceptance_criteria": [],
+            }
+            for status in (
+                "open",
+                "in_progress",
+                "training_passed",
+                "waiting_real_validation",
+                "real_validated",
+                "archived",
+            )
+        ]
+
+        text = render_single_text(package)
+
+        for label in (
+            "待开始",
+            "进行中",
+            "训练已通过",
+            "等待真实面试验证",
+            "已通过真实面试验证",
+            "已归档",
+        ):
+            self.assertIn(label, text)
+
     def test_single_text_report_is_plain_readable_markdown(self):
         package = sample_package()
         package["growth_tasks"][0]["real_validation_condition"] = (
@@ -170,10 +208,17 @@ class SingleReportTests(unittest.TestCase):
             question_id = f"seg_q{number}"
             answer_id = f"seg_a{number}"
             question = f"第{number}个完整问题？"
+            answer = f"第{number}个回答。"
+            package["source"]["blocks"].extend(
+                [
+                    {"block_id": f"blk_q{number}", "text": question},
+                    {"block_id": f"blk_a{number}", "text": answer},
+                ]
+            )
             package["segments"].extend(
                 [
-                    {"segment_id": question_id, "sequence_no": number * 2 - 1, "speaker_role": "interviewer", "event_type": "question", "text": question},
-                    {"segment_id": answer_id, "sequence_no": number * 2, "speaker_role": "candidate", "event_type": "answer", "text": f"第{number}个回答。"},
+                    {"segment_id": question_id, "sequence_no": number * 2 - 1, "source_block_id": f"blk_q{number}", "start_char": 0, "end_char": len(question), "speaker_role": "interviewer", "event_type": "question", "text": question},
+                    {"segment_id": answer_id, "sequence_no": number * 2, "source_block_id": f"blk_a{number}", "start_char": 0, "end_char": len(answer), "speaker_role": "candidate", "event_type": "answer", "text": answer},
                 ]
             )
             package["qa_chains"].append(

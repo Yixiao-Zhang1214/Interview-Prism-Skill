@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 import sqlite3
 import sys
+from typing import Dict, List, Optional
 from xml.sax.saxutils import escape
 
 from interview_store import import_session, render_original_qa, validate_session_package
@@ -47,9 +48,10 @@ RESULT_LABELS = {
 TASK_STATUS_LABELS = {
     "open": "待开始",
     "in_progress": "进行中",
+    "training_passed": "训练已通过",
     "waiting_real_validation": "等待真实面试验证",
     "real_validated": "已通过真实面试验证",
-    "closed": "已结束",
+    "archived": "已归档",
 }
 
 def _text(value):
@@ -182,8 +184,8 @@ def _comparison_session_fact(package: dict) -> dict:
 
 
 def load_session_packages(
-    data_dir: str, source_type: str, session_ids: list[str] | None = None
-) -> list[dict]:
+    data_dir: str, source_type: str, session_ids: Optional[List[str]] = None
+) -> List[Dict]:
     if source_type not in {"real", "mock"}:
         raise ValueError("source_type must be real or mock")
 
@@ -205,7 +207,7 @@ def load_session_packages(
     return [json.loads(raw_json) for (raw_json,) in rows]
 
 
-def build_comparison_view(packages: list[dict]) -> dict:
+def build_comparison_view(packages: List[Dict]) -> Dict:
     source_types = {
         package.get("session", {}).get("source_type") for package in packages
     }
@@ -498,7 +500,8 @@ def _overall_interviewer_thought(review: dict, reactions: dict) -> list[str]:
     return parts
 
 
-def render_single_text(package: dict, radar_image: str | None = None) -> str:
+def render_single_text(package: dict, radar_image: Optional[str] = None) -> str:
+    validate_session_package(package)
     view = build_single_view(package)
     review = view["review"]
     chains = sorted(
@@ -611,11 +614,13 @@ def render_single_text(package: dict, radar_image: str | None = None) -> str:
         lines.append("")
 
     lines.extend(["## 成长任务", ""])
-    tasks = package.get("growth_tasks", [])[:3]
+    tasks = package.get("growth_tasks", [])
     if not tasks:
         lines.append("暂无成长任务。")
     for index, task in enumerate(tasks, start=1):
         lines.extend([f'### {index}. {task.get("title") or "未命名任务"}', ""])
+        status = TASK_STATUS_LABELS[task.get("status", "open")]
+        lines.extend([f"状态：{status}", ""])
         lines.append("动作：")
         lines.extend(f'- {step}' for step in task.get("steps", []))
         lines.append("")
@@ -652,7 +657,7 @@ def render_single_text(package: dict, radar_image: str | None = None) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def render_comparison_text(packages: list[dict]) -> str:
+def render_comparison_text(packages: List[Dict]) -> str:
     view = build_comparison_view(packages)
     ledger = "真实面试账本" if view["source_type"] == "real" else "模拟训练账本"
     lines = ["# 面试交叉分析", "", "## 数据范围", "", f"- {ledger}"]
@@ -705,7 +710,7 @@ def render_comparison_text(packages: list[dict]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def render_ability_model_text(packages: list[dict]) -> str:
+def render_ability_model_text(packages: List[Dict]) -> str:
     view = build_comparison_view(packages)
     ledger = "真实面试" if view["source_type"] == "real" else "模拟训练"
     title = "初始能力快照" if len(packages) == 1 else "累计能力模型"
@@ -765,7 +770,7 @@ def render_ability_model_text(packages: list[dict]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def render_frequent_questions_text(packages: list[dict]) -> str:
+def render_frequent_questions_text(packages: List[Dict]) -> str:
     view = build_comparison_view(packages)
     ledger = "真实面试" if view["source_type"] == "real" else "模拟训练"
     first_session = len(packages) == 1
@@ -838,7 +843,7 @@ def _resolve_artifact_stem(output_dir: Path, package: dict) -> str:
     raise ValueError("too many interviews share the same minute")
 
 
-def write_artifact_bundle(file_path: str, data_dir: str, output_dir: str) -> list[Path]:
+def write_artifact_bundle(file_path: str, data_dir: str, output_dir: str) -> List[Path]:
     package = json.loads(Path(file_path).read_text(encoding="utf-8"))
     validate_session_package(package)
     import_session(data_dir, package)

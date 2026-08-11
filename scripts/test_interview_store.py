@@ -409,5 +409,141 @@ class InterviewStoreTests(unittest.TestCase):
         self.assertIn("我们做了推荐页改版。", rendered.stdout)
 
 
+class SemanticValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.data_dir = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def package(self):
+        return InterviewStoreTests().session_package()
+
+    def assert_unknown_qa_chain_is_rejected(self, key, value):
+        package = self.package()
+        package[key] = value
+
+        with self.assertRaisesRegex(ValueError, "unknown qa_chain"):
+            store.validate_session_package(package)
+
+    def test_question_analyses_reject_unknown_qa_chain_references(self):
+        self.assert_unknown_qa_chain_is_rejected(
+            "question_analyses", [{"qa_chain_id": "qa_missing"}]
+        )
+
+    def test_assessments_reject_unknown_qa_chain_references(self):
+        self.assert_unknown_qa_chain_is_rejected(
+            "assessments", [{"qa_chain_id": "qa_missing"}]
+        )
+
+    def test_simulated_reactions_reject_unknown_qa_chain_references(self):
+        self.assert_unknown_qa_chain_is_rejected(
+            "simulated_reactions",
+            [{"qa_chain_id": "qa_missing", "is_simulation": True}],
+        )
+
+    def test_session_review_rejects_unknown_qa_chain_references(self):
+        self.assert_unknown_qa_chain_is_rejected(
+            "session_review", {"best_answer_qa_chain_id": "qa_missing"}
+        )
+
+    def test_growth_tasks_reject_unknown_qa_chain_references(self):
+        self.assert_unknown_qa_chain_is_rejected(
+            "growth_tasks",
+            [{"task_id": "task_001", "source_qa_chain_ids": ["qa_missing"]}],
+        )
+
+    def test_knowledge_candidates_reject_unknown_qa_chain_references(self):
+        self.assert_unknown_qa_chain_is_rejected(
+            "knowledge_candidates", [{"source_qa_chain_ids": ["qa_missing"]}]
+        )
+
+    def test_duplicate_question_analysis_for_a_qa_chain_is_rejected(self):
+        package = self.package()
+        package["question_analyses"] = [
+            {"qa_chain_id": "qa_001"},
+            {"qa_chain_id": "qa_001"},
+        ]
+
+        with self.assertRaisesRegex(ValueError, "duplicate question_analysis"):
+            store.validate_session_package(package)
+
+    def test_duplicate_assessment_for_a_qa_chain_is_rejected(self):
+        package = self.package()
+        package["assessments"] = [
+            {"qa_chain_id": "qa_001", "competency_observations": []},
+            {"qa_chain_id": "qa_001", "competency_observations": []},
+        ]
+
+        with self.assertRaisesRegex(ValueError, "duplicate assessment"):
+            store.validate_session_package(package)
+
+    def test_duplicate_simulated_reaction_for_a_qa_chain_is_rejected(self):
+        package = self.package()
+        package["simulated_reactions"] = [
+            {"qa_chain_id": "qa_001", "is_simulation": True},
+            {"qa_chain_id": "qa_001", "is_simulation": True},
+        ]
+
+        with self.assertRaisesRegex(ValueError, "duplicate simulated_reaction"):
+            store.validate_session_package(package)
+
+    def test_simulated_reactions_require_explicit_true_simulation_marker(self):
+        for marker in (None, False):
+            with self.subTest(marker=marker):
+                package = self.package()
+                reaction = {"qa_chain_id": "qa_001"}
+                if marker is not None:
+                    reaction["is_simulation"] = marker
+                package["simulated_reactions"] = [reaction]
+
+                with self.assertRaisesRegex(ValueError, "is_simulation"):
+                    store.validate_session_package(package)
+
+    def test_semantic_records_reject_unknown_evidence_segments(self):
+        cases = (
+            ("question_analyses", [{"qa_chain_id": "qa_001", "evidence_segment_ids": ["seg_missing"]}]),
+            ("assessments", [{"qa_chain_id": "qa_001", "evidence_segment_ids": ["seg_missing"], "competency_observations": []}]),
+            ("simulated_reactions", [{"qa_chain_id": "qa_001", "is_simulation": True, "evidence_segment_ids": ["seg_missing"]}]),
+            ("session_review", {"key_turns": [{"qa_chain_id": "qa_001", "evidence_segment_ids": ["seg_missing"]}]}),
+            ("growth_tasks", [{"task_id": "task_001", "source_qa_chain_ids": ["qa_001"], "evidence_segment_ids": ["seg_missing"]}]),
+            ("knowledge_candidates", [{"source_qa_chain_ids": ["qa_001"], "evidence_segment_ids": ["seg_missing"]}]),
+        )
+        for key, value in cases:
+            with self.subTest(record_type=key):
+                package = self.package()
+                package[key] = value
+
+                with self.assertRaisesRegex(ValueError, "unknown segment"):
+                    store.validate_session_package(package)
+
+    def test_growth_tasks_accept_every_canonical_status(self):
+        for status in (
+            "open",
+            "in_progress",
+            "training_passed",
+            "waiting_real_validation",
+            "real_validated",
+            "archived",
+        ):
+            with self.subTest(status=status):
+                package = self.package()
+                package["growth_tasks"] = [{"task_id": "task_001", "status": status}]
+                store.validate_session_package(package)
+
+    def test_growth_tasks_reject_unknown_status_and_type(self):
+        for task in (
+            {"task_id": "task_001", "status": "closed"},
+            {"task_id": "task_001", "task_type": "unknown_type"},
+        ):
+            with self.subTest(task=task):
+                package = self.package()
+                package["growth_tasks"] = [task]
+
+                with self.assertRaisesRegex(ValueError, "unknown task"):
+                    store.validate_session_package(package)
+
+
 if __name__ == "__main__":
     unittest.main()

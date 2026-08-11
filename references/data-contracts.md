@@ -200,7 +200,7 @@ P05 omits permanent `observation_id`; code creates it after validation. The exch
 
 Allowed task types: `knowledge`, `case_material`, `answer_rebuild`, `compression`, `pressure_follow_up`, `real_world_validation`.
 
-Typical states: `open`, `in_progress`, `training_passed`, `waiting_real_validation`, `real_validated`, `archived`.
+Allowed task statuses: `open`, `in_progress`, `training_passed`, `waiting_real_validation`, `real_validated`, `archived`.
 
 A mock session may create or update through `waiting_real_validation`; it cannot set `real_validated`.
 

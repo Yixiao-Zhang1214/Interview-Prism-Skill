@@ -302,6 +302,281 @@ class InterviewStoreTests(unittest.TestCase):
             profile["formal_profile"]["structured_communication"],
         )
 
+    def test_same_external_task_id_is_scoped_across_real_and_mock_sessions(self):
+        real_package = self.session_package()
+        real_package["growth_tasks"] = [
+            {"task_id": "task_shared", "title": "Real task", "status": "open"}
+        ]
+        mock_package = self.session_package(session_id="mock_001", source_type="mock")
+        mock_package["growth_tasks"] = [
+            {"task_id": "task_shared", "title": "Mock task", "status": "open"}
+        ]
+
+        store.import_session(self.data_dir, real_package)
+        store.import_session(self.data_dir, mock_package)
+
+        with sqlite3.connect(self.data_dir / "library.db") as connection:
+            tasks = connection.execute(
+                """
+                SELECT session_id, task_id, title
+                FROM growth_tasks
+                ORDER BY session_id
+                """
+            ).fetchall()
+        self.assertEqual(
+            [
+                ("int_001", "task_shared", "Real task"),
+                ("mock_001", "task_shared", "Mock task"),
+            ],
+            tasks,
+        )
+
+    def test_revision_replaces_only_its_session_scoped_task_projection(self):
+        real_package = self.session_package()
+        real_package["growth_tasks"] = [
+            {"task_id": "task_shared", "title": "Real task", "status": "open"}
+        ]
+        mock_package = self.session_package(session_id="mock_001", source_type="mock")
+        mock_package["growth_tasks"] = [
+            {"task_id": "task_shared", "title": "Mock task", "status": "open"}
+        ]
+        store.import_session(self.data_dir, real_package)
+        store.import_session(self.data_dir, mock_package)
+        revised_real = self.session_package()
+        revised_real["session"]["role"] = "Senior Product Manager"
+        revised_real["growth_tasks"] = [
+            {
+                "task_id": "task_shared",
+                "title": "Revised real task",
+                "status": "in_progress",
+            }
+        ]
+
+        result = store.import_session(self.data_dir, revised_real)
+
+        self.assertEqual(2, result["revision_no"])
+        with sqlite3.connect(self.data_dir / "library.db") as connection:
+            tasks = connection.execute(
+                """
+                SELECT session_id, task_id, title
+                FROM growth_tasks
+                ORDER BY session_id
+                """
+            ).fetchall()
+        self.assertEqual(
+            [
+                ("int_001", "task_shared", "Revised real task"),
+                ("mock_001", "task_shared", "Mock task"),
+            ],
+            tasks,
+        )
+
+    def test_v1_task_projection_migration_allows_reused_external_task_id(self):
+        db_path = self.data_dir / "library.db"
+        legacy_package = self.session_package()
+        raw_json = json.dumps(
+            legacy_package, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        with sqlite3.connect(db_path) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    source_type TEXT NOT NULL,
+                    occurred_at TEXT,
+                    company TEXT,
+                    role TEXT,
+                    round_name TEXT,
+                    input_type TEXT,
+                    import_fingerprint TEXT NOT NULL UNIQUE,
+                    raw_json TEXT NOT NULL,
+                    imported_at TEXT NOT NULL,
+                    deleted_at TEXT
+                );
+                CREATE TABLE growth_tasks (
+                    task_id TEXT PRIMARY KEY,
+                    session_id TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
+                    source_type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    task_type TEXT,
+                    status TEXT NOT NULL,
+                    acceptance_json TEXT NOT NULL,
+                    data_json TEXT NOT NULL
+                );
+                PRAGMA user_version = 1;
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO sessions (
+                    session_id, source_type, import_fingerprint, raw_json, imported_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                ("int_001", "real", "legacy-source", raw_json, "2026-08-10T02:00:00+00:00"),
+            )
+            connection.execute(
+                """
+                INSERT INTO growth_tasks (
+                    task_id, session_id, source_type, title, status,
+                    acceptance_json, data_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "task_shared",
+                    "int_001",
+                    "real",
+                    "Legacy task",
+                    "open",
+                    "[]",
+                    '{"task_id":"task_shared","title":"Legacy task"}',
+                ),
+            )
+
+        store.initialize_library(self.data_dir)
+        mock_package = self.session_package(session_id="mock_001", source_type="mock")
+        mock_package["growth_tasks"] = [
+            {"task_id": "task_shared", "title": "Mock task", "status": "open"}
+        ]
+        store.import_session(self.data_dir, mock_package)
+
+        with sqlite3.connect(db_path) as connection:
+            tasks = connection.execute(
+                """
+                SELECT session_id, task_id, title
+                FROM growth_tasks
+                ORDER BY session_id
+                """
+            ).fetchall()
+        self.assertEqual(
+            [
+                ("int_001", "task_shared", "Legacy task"),
+                ("mock_001", "task_shared", "Mock task"),
+            ],
+            tasks,
+        )
+
+    def test_v1_migration_failure_rolls_back_schema_version_and_data(self):
+        db_path = self.data_dir / "library.db"
+        malformed_json = "{not valid json"
+        with sqlite3.connect(db_path) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    source_type TEXT NOT NULL,
+                    occurred_at TEXT,
+                    company TEXT,
+                    role TEXT,
+                    round_name TEXT,
+                    input_type TEXT,
+                    import_fingerprint TEXT NOT NULL UNIQUE,
+                    raw_json TEXT NOT NULL,
+                    imported_at TEXT NOT NULL,
+                    deleted_at TEXT
+                );
+                CREATE TABLE growth_tasks (
+                    task_id TEXT PRIMARY KEY,
+                    session_id TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
+                    source_type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    task_type TEXT,
+                    status TEXT NOT NULL,
+                    acceptance_json TEXT NOT NULL,
+                    data_json TEXT NOT NULL
+                );
+                PRAGMA user_version = 1;
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO sessions (
+                    session_id, source_type, import_fingerprint, raw_json, imported_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                ("int_001", "real", "legacy-source", malformed_json, "2026-08-10T02:00:00+00:00"),
+            )
+
+        with self.assertRaises(json.JSONDecodeError):
+            store.initialize_library(self.data_dir)
+
+        with sqlite3.connect(db_path) as connection:
+            user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+            session_columns = [
+                row[1] for row in connection.execute("PRAGMA table_info(sessions)")
+            ]
+            revision_table = connection.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'session_revisions'
+                """
+            ).fetchone()
+            task_primary_key = [
+                row[1]
+                for row in connection.execute("PRAGMA table_info(growth_tasks)")
+                if row[5]
+            ]
+            stored_json = connection.execute(
+                "SELECT raw_json FROM sessions WHERE session_id = 'int_001'"
+            ).fetchone()[0]
+        self.assertEqual(1, user_version)
+        self.assertNotIn("current_revision", session_columns)
+        self.assertIsNone(revision_table)
+        self.assertEqual(["task_id"], task_primary_key)
+        self.assertEqual(malformed_json, stored_json)
+
+    def test_revision_failure_rolls_back_history_and_current_projections(self):
+        original = self.session_package()
+        self.add_observation(original, "obs_original", 2)
+        original["growth_tasks"] = [
+            {"task_id": "task_shared", "title": "Original task", "status": "open"}
+        ]
+        store.import_session(self.data_dir, original)
+        db_path = self.data_dir / "library.db"
+        with sqlite3.connect(db_path) as connection:
+            connection.execute(
+                """
+                CREATE TRIGGER abort_failed_revision
+                BEFORE INSERT ON growth_tasks
+                WHEN NEW.title = 'Fail revision'
+                BEGIN
+                    SELECT RAISE(ABORT, 'forced revision failure');
+                END
+                """
+            )
+        revised = self.session_package()
+        revised["session"]["role"] = "Senior Product Manager"
+        revised["qa_chains"][0]["answer_status"] = "partial"
+        self.add_observation(revised, "obs_revised", 5)
+        revised["growth_tasks"] = [
+            {"task_id": "task_shared", "title": "Fail revision", "status": "open"}
+        ]
+
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "forced revision failure"):
+            store.import_session(self.data_dir, revised)
+
+        with sqlite3.connect(db_path) as connection:
+            current_revision, raw_json = connection.execute(
+                "SELECT current_revision, raw_json FROM sessions WHERE session_id = 'int_001'"
+            ).fetchone()
+            revisions = connection.execute(
+                "SELECT revision_no FROM session_revisions WHERE session_id = 'int_001'"
+            ).fetchall()
+            qa_status = connection.execute(
+                "SELECT answer_status FROM qa_chains WHERE session_id = 'int_001'"
+            ).fetchone()[0]
+            observations = connection.execute(
+                "SELECT observation_id FROM observations WHERE session_id = 'int_001'"
+            ).fetchall()
+            tasks = connection.execute(
+                "SELECT task_id, title FROM growth_tasks WHERE session_id = 'int_001'"
+            ).fetchall()
+        self.assertEqual(1, current_revision)
+        self.assertEqual("Product Manager", json.loads(raw_json)["session"]["role"])
+        self.assertEqual([(1,)], revisions)
+        self.assertEqual("complete", qa_status)
+        self.assertEqual([("obs_original",)], observations)
+        self.assertEqual([("task_shared", "Original task")], tasks)
+
     def test_unknown_segment_reference_rejects_whole_import(self):
         package = self.session_package()
         package["qa_chains"][0]["turns"][1]["segment_ids"] = ["seg_missing"]

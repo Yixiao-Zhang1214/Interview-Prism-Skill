@@ -75,15 +75,19 @@ CREATE TABLE IF NOT EXISTS observations (
     PRIMARY KEY (session_id, observation_id)
 );
 
+"""
+
+GROWTH_TASKS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS growth_tasks (
-    task_id TEXT PRIMARY KEY,
     session_id TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
+    task_id TEXT NOT NULL,
     source_type TEXT NOT NULL CHECK (source_type IN ('real', 'mock')),
     title TEXT NOT NULL,
     task_type TEXT,
     status TEXT NOT NULL,
     acceptance_json TEXT NOT NULL,
-    data_json TEXT NOT NULL
+    data_json TEXT NOT NULL,
+    PRIMARY KEY (session_id, task_id)
 );
 """
 
@@ -136,6 +140,34 @@ def initialize_library(data_dir):
             for statement in SCHEMA.split(";"):
                 if statement.strip():
                     connection.execute(statement)
+
+            task_columns = connection.execute(
+                "PRAGMA table_info(growth_tasks)"
+            ).fetchall()
+            task_primary_key = [
+                row[1]
+                for row in sorted(task_columns, key=lambda row: row[5])
+                if row[5]
+            ]
+            if task_primary_key == ["task_id"]:
+                connection.execute(
+                    "ALTER TABLE growth_tasks RENAME TO growth_tasks_legacy"
+                )
+                connection.execute(GROWTH_TASKS_SCHEMA)
+                connection.execute(
+                    """
+                    INSERT INTO growth_tasks (
+                        session_id, task_id, source_type, title, task_type,
+                        status, acceptance_json, data_json
+                    )
+                    SELECT session_id, task_id, source_type, title, task_type,
+                           status, acceptance_json, data_json
+                    FROM growth_tasks_legacy
+                    """
+                )
+                connection.execute("DROP TABLE growth_tasks_legacy")
+            elif not task_columns:
+                connection.execute(GROWTH_TASKS_SCHEMA)
 
             if sessions_exists and user_version < 2:
                 legacy_sessions = connection.execute(

@@ -136,3 +136,90 @@ commit cannot truthfully contain its own final hash.
 - The initial root-level unittest discovery command found zero tests because
   the suites live under `scripts`; the required full-suite gate was rerun with
   `discover -s scripts` and passed all 56 tests.
+
+## Fix Round 1: Session-Scoped Task Projections and Rollback Proof
+
+### Reviewer Findings Addressed
+
+- `growth_tasks.task_id` remains the external task identifier, but persisted
+  uniqueness is now scoped by the composite primary key
+  `(session_id, task_id)`. Real and mock sessions can safely reuse the same
+  external task ID.
+- Revision replacement continues to delete and recreate projections only for
+  the revised session, so a colliding task ID in another session is preserved.
+- Initialization detects the legacy sole `task_id` primary key for both V1
+  databases and V2 databases created before this fix. It renames the legacy
+  table, creates the session-scoped table, copies every task row without
+  changing external IDs or JSON, and drops the legacy table in the existing
+  migration transaction.
+- Real SQLite failure-path tests now prove rollback for migration and revision
+  mutations without mocks.
+
+### Fix-Round RED Evidence
+
+The five focused tests were run under Python 3.9.6 before production edits:
+
+```text
+EEE..
+Ran 5 tests in 0.064s
+FAILED (errors=3)
+```
+
+All three errors were the intended defect:
+
+```text
+sqlite3.IntegrityError: UNIQUE constraint failed: growth_tasks.task_id
+```
+
+They covered direct real/mock collision, revision safety with a colliding task
+in another session, and V1 migration followed by reuse of the legacy external
+task ID. The two rollback tests passed in RED and serve as characterization
+guards for the transaction boundaries changed by this fix.
+
+### Fix-Round GREEN Evidence
+
+Focused tests on Python 3.9.6:
+
+```text
+Ran 5 tests in 0.068s
+OK
+```
+
+Focused tests on bundled Python 3.12.13:
+
+```text
+/Users/bytedance/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest <five fix-round test names>
+Ran 5 tests in 0.048s
+OK
+```
+
+Full suite on bundled Python 3.12.13:
+
+```text
+/Users/bytedance/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s scripts
+Ran 61 tests in 0.755s
+OK
+```
+
+### Transaction Rollback Evidence
+
+- Migration failure uses malformed V1 `raw_json`, causing real
+  `json.JSONDecodeError` after schema work begins. After rollback, the test
+  confirms `PRAGMA user_version` is still 1, `current_revision` is absent,
+  `session_revisions` is absent, the legacy sole task primary key remains, and
+  the malformed source row is unchanged.
+- Revision failure installs a temporary SQLite `BEFORE INSERT` trigger using
+  `RAISE(ABORT)` on the replacement task. After the real
+  `sqlite3.IntegrityError`, the test confirms current revision 1, one historical
+  revision, original `raw_json`, QA status, observation, and task projection.
+
+### Fix-Round Self-Review and Concerns
+
+- The table rebuild and row copy execute inside the same `BEGIN IMMEDIATE`
+  transaction as schema creation, revision backfill, and `user_version` update.
+- The migration runs even when `user_version` is already 2, repairing databases
+  initialized by the earlier Task 2 implementation.
+- Imported task projections always have a non-null session ID. Existing orphaned
+  legacy rows with a null session ID remain representable under SQLite's
+  composite-key semantics and are copied without data loss.
+- No Task 3 report-bundling production code or tests were changed.

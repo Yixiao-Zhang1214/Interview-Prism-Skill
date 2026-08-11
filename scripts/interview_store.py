@@ -328,8 +328,8 @@ def validate_session_package(package):
 
 
 def import_session(data_dir, package):
-    db_path = initialize_library(data_dir)
     validate_session_package(package)
+    db_path = initialize_library(data_dir)
     session = package["session"]
     fingerprint = _import_fingerprint(package)
 

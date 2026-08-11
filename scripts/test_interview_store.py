@@ -141,15 +141,7 @@ class InterviewStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown segment"):
             store.import_session(self.data_dir, package)
 
-        with sqlite3.connect(self.data_dir / "library.db") as connection:
-            session_count = connection.execute(
-                "SELECT COUNT(*) FROM sessions"
-            ).fetchone()[0]
-            segment_count = connection.execute(
-                "SELECT COUNT(*) FROM segments"
-            ).fetchone()[0]
-        self.assertEqual(0, session_count)
-        self.assertEqual(0, segment_count)
+        self.assertFalse((self.data_dir / "library.db").exists())
 
     def test_segment_cannot_be_assigned_to_multiple_question_chains(self):
         package = self.session_package()
@@ -543,6 +535,26 @@ class SemanticValidationTests(unittest.TestCase):
 
                 with self.assertRaisesRegex(ValueError, "unknown task"):
                     store.validate_session_package(package)
+
+    def test_import_rejects_unknown_qa_chain_before_creating_database(self):
+        package = self.package()
+        package["question_analyses"] = [{"qa_chain_id": "qa_missing"}]
+
+        with self.assertRaisesRegex(ValueError, "unknown qa_chain"):
+            store.import_session(self.data_dir, package)
+
+        self.assertFalse((self.data_dir / "library.db").exists())
+
+    def test_import_rejects_unknown_evidence_before_creating_database(self):
+        package = self.package()
+        package["question_analyses"] = [
+            {"qa_chain_id": "qa_001", "evidence_segment_ids": ["seg_missing"]}
+        ]
+
+        with self.assertRaisesRegex(ValueError, "unknown segment"):
+            store.import_session(self.data_dir, package)
+
+        self.assertFalse((self.data_dir / "library.db").exists())
 
 
 if __name__ == "__main__":

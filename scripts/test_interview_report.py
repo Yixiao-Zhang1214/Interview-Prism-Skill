@@ -257,6 +257,24 @@ class SingleReportTests(unittest.TestCase):
         self.assertIn("如果进入下一轮，我会继续追问：继续追问基线和对照", text)
 
 
+class PublicPackageRenderValidationTests(unittest.TestCase):
+    def assert_invalid_package_is_rejected(self, renderer):
+        package = sample_package()
+        package["question_analyses"][0]["qa_chain_id"] = "qa_missing"
+
+        with self.assertRaisesRegex(ValueError, "unknown qa_chain"):
+            renderer([package])
+
+    def test_comparison_text_rejects_invalid_package_at_public_boundary(self):
+        self.assert_invalid_package_is_rejected(render_comparison_text)
+
+    def test_ability_model_rejects_invalid_package_at_public_boundary(self):
+        self.assert_invalid_package_is_rejected(render_ability_model_text)
+
+    def test_frequent_questions_rejects_invalid_package_at_public_boundary(self):
+        self.assert_invalid_package_is_rejected(render_frequent_questions_text)
+
+
 class ComparisonReportTests(unittest.TestCase):
     def test_comparison_text_uses_deterministic_same_ledger_facts(self):
         packages = [

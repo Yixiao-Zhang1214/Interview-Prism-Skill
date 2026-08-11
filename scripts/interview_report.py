@@ -658,6 +658,8 @@ def render_single_text(package: dict, radar_image: Optional[str] = None) -> str:
 
 
 def render_comparison_text(packages: List[Dict]) -> str:
+    for package in packages:
+        validate_session_package(package)
     view = build_comparison_view(packages)
     ledger = "真实面试账本" if view["source_type"] == "real" else "模拟训练账本"
     lines = ["# 面试交叉分析", "", "## 数据范围", "", f"- {ledger}"]
@@ -711,6 +713,8 @@ def render_comparison_text(packages: List[Dict]) -> str:
 
 
 def render_ability_model_text(packages: List[Dict]) -> str:
+    for package in packages:
+        validate_session_package(package)
     view = build_comparison_view(packages)
     ledger = "真实面试" if view["source_type"] == "real" else "模拟训练"
     title = "初始能力快照" if len(packages) == 1 else "累计能力模型"
@@ -771,6 +775,8 @@ def render_ability_model_text(packages: List[Dict]) -> str:
 
 
 def render_frequent_questions_text(packages: List[Dict]) -> str:
+    for package in packages:
+        validate_session_package(package)
     view = build_comparison_view(packages)
     ledger = "真实面试" if view["source_type"] == "real" else "模拟训练"
     first_session = len(packages) == 1

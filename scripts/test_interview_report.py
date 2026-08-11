@@ -1,5 +1,6 @@
 import copy
 import json
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,7 @@ REPORT_SCRIPT = Path(__file__).with_name("interview_report.py")
 STORE_SCRIPT = Path(__file__).with_name("interview_store.py")
 
 from interview_report import (
+    TASK_STATUS_LABELS,
     artifact_stem,
     build_comparison_view,
     load_session_packages,
@@ -23,7 +25,7 @@ from interview_report import (
     render_single_text,
     write_artifact_bundle,
 )
-from interview_store import import_session, soft_delete_session
+from interview_store import GROWTH_TASK_STATUSES, import_session, soft_delete_session
 
 
 def sample_package(source_type="real", session_id="int_test"):
@@ -87,6 +89,9 @@ def sample_package(source_type="real", session_id="int_test"):
 
 
 class SingleReportTests(unittest.TestCase):
+    def test_task_status_labels_cover_exactly_the_canonical_statuses(self):
+        self.assertEqual(GROWTH_TASK_STATUSES, set(TASK_STATUS_LABELS))
+
     def test_single_text_rejects_invalid_package_at_public_boundary(self):
         package = sample_package()
         package["question_analyses"][0]["qa_chain_id"] = "qa_missing"
@@ -277,6 +282,13 @@ class PublicPackageRenderValidationTests(unittest.TestCase):
     def test_frequent_questions_rejects_invalid_package_at_public_boundary(self):
         self.assert_invalid_package_is_rejected(render_frequent_questions_text)
 
+    def test_radar_svg_rejects_invalid_package_at_public_boundary(self):
+        package = sample_package()
+        package["question_analyses"][0]["qa_chain_id"] = "qa_missing"
+
+        with self.assertRaisesRegex(ValueError, "unknown qa_chain"):
+            render_radar_svg(package)
+
 
 class ComparisonReportTests(unittest.TestCase):
     def test_comparison_text_uses_deterministic_same_ledger_facts(self):
@@ -362,6 +374,21 @@ class ComparisonReportTests(unittest.TestCase):
 
         self.assertEqual([item["session"]["id"] for item in loaded], ["int_visible"])
         self.assertEqual(loaded[0]["session"]["source_type"], "real")
+
+    def test_loader_uses_replayed_package_as_current_report_input(self):
+        original = sample_package("real", "int_replayed")
+        revised = copy.deepcopy(original)
+        revised["growth_tasks"][0]["title"] = "Revision B task"
+        revised["assessments"][0]["competency_observations"][0]["level"] = 2
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            import_session(data_dir, original)
+            import_session(data_dir, revised)
+            import_session(data_dir, original)
+
+            loaded = load_session_packages(data_dir, "real")
+
+        self.assertEqual([original], loaded)
 
 class ReportCliTests(unittest.TestCase):
     def test_bundle_cli_writes_timestamped_complete_artifact_set(self):
@@ -589,6 +616,131 @@ class ReportCliTests(unittest.TestCase):
                     if name != retained_name
                 },
             )
+
+    def test_bundle_interrupt_after_backup_retains_recovery_and_reraises_interrupt(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            package = sample_package(session_id="interrupt_session")
+            revised = copy.deepcopy(package)
+            revised["growth_tasks"][0]["title"] = "Interrupted revision"
+            package_path = root / "source.json"
+            revised_path = root / "revised.json"
+            data_dir = root / "library"
+            output_dir = root / "outputs"
+            package_path.write_text(
+                json.dumps(package, ensure_ascii=False), encoding="utf-8"
+            )
+            revised_path.write_text(
+                json.dumps(revised, ensure_ascii=False), encoding="utf-8"
+            )
+            write_artifact_bundle(str(package_path), str(data_dir), str(output_dir))
+            previous_contents = {
+                path.name: path.read_bytes() for path in output_dir.iterdir()
+            }
+            original_replace = Path.replace
+            state = {"backup_moves": 0, "backed_up_name": None}
+
+            def interrupt_then_fail_restore(path, target):
+                if path.parent == output_dir and target.parent.name == "previous":
+                    state["backup_moves"] += 1
+                    if state["backup_moves"] == 1:
+                        state["backed_up_name"] = path.name
+                        return original_replace(path, target)
+                    raise KeyboardInterrupt("simulated publication interrupt")
+                if (
+                    path.parent.name == "previous"
+                    and path.name == state["backed_up_name"]
+                ):
+                    raise OSError("simulated interrupted rollback failure")
+                return original_replace(path, target)
+
+            with patch.object(Path, "replace", new=interrupt_then_fail_restore):
+                with self.assertRaises(KeyboardInterrupt) as caught:
+                    write_artifact_bundle(
+                        str(revised_path), str(data_dir), str(output_dir)
+                    )
+
+            self.assertEqual(2, state["backup_moves"])
+            self.assertIn("recovery directory:", str(caught.exception))
+            recovery_path = Path(
+                str(caught.exception)
+                .split("recovery directory: ", 1)[1]
+                .split("; errors:", 1)[0]
+            )
+            self.assertTrue(recovery_path.is_dir())
+            backed_up_name = state["backed_up_name"]
+            self.assertEqual(
+                (recovery_path / "previous" / backed_up_name).read_bytes(),
+                previous_contents[backed_up_name],
+            )
+
+    def test_bundle_publication_failure_then_retry_converges_ledger_and_artifacts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original = sample_package(session_id="retry_session")
+            revised = copy.deepcopy(original)
+            revised["growth_tasks"][0]["title"] = "Retry converged task"
+            original_path = root / "original.json"
+            revised_path = root / "revised.json"
+            data_dir = root / "library"
+            output_dir = root / "outputs"
+            original_path.write_text(
+                json.dumps(original, ensure_ascii=False), encoding="utf-8"
+            )
+            revised_path.write_text(
+                json.dumps(revised, ensure_ascii=False), encoding="utf-8"
+            )
+            write_artifact_bundle(
+                str(original_path), str(data_dir), str(output_dir)
+            )
+            previous_contents = {
+                path.name: path.read_bytes() for path in output_dir.iterdir()
+            }
+            original_replace = Path.replace
+
+            def fail_final_publication(path, target):
+                if (
+                    path.parent.name.startswith(".interview-report-")
+                    and path.parent.name != "previous"
+                    and path.name.endswith("-ability-model.md")
+                ):
+                    raise OSError("simulated retryable publication failure")
+                return original_replace(path, target)
+
+            with patch.object(Path, "replace", new=fail_final_publication):
+                with self.assertRaisesRegex(
+                    OSError, "simulated retryable publication failure"
+                ):
+                    write_artifact_bundle(
+                        str(revised_path), str(data_dir), str(output_dir)
+                    )
+
+            self.assertEqual(
+                previous_contents,
+                {path.name: path.read_bytes() for path in output_dir.iterdir()},
+            )
+
+            write_artifact_bundle(str(revised_path), str(data_dir), str(output_dir))
+
+            with sqlite3.connect(data_dir / "library.db") as connection:
+                current_revision = connection.execute(
+                    "SELECT current_revision FROM sessions WHERE session_id = 'retry_session'"
+                ).fetchone()[0]
+                revision_count = connection.execute(
+                    "SELECT COUNT(*) FROM session_revisions WHERE session_id = 'retry_session'"
+                ).fetchone()[0]
+            session_artifact = json.loads(
+                (output_dir / "IP-R-20260702-1330-session.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            analysis = (
+                output_dir / "IP-R-20260702-1330-analysis.md"
+            ).read_text(encoding="utf-8")
+            self.assertEqual(2, current_revision)
+            self.assertEqual(2, revision_count)
+            self.assertEqual(revised, session_artifact)
+            self.assertIn("Retry converged task", analysis)
 
     def test_bundle_revision_uses_persisted_current_cumulative_ledger(self):
         with tempfile.TemporaryDirectory() as temp_dir:

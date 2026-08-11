@@ -10,7 +10,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-SCHEMA = """
+SESSION_REVISIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS session_revisions (
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    revision_no INTEGER NOT NULL CHECK (revision_no >= 1),
+    package_hash TEXT NOT NULL,
+    raw_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, revision_no)
+)
+"""
+
+SCHEMA = f"""
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -28,15 +39,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     deleted_at TEXT
 );
 
-CREATE TABLE IF NOT EXISTS session_revisions (
-    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    revision_no INTEGER NOT NULL CHECK (revision_no >= 1),
-    package_hash TEXT NOT NULL,
-    package_json TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (session_id, revision_no),
-    UNIQUE (session_id, package_hash)
-);
+{SESSION_REVISIONS_SCHEMA};
 
 CREATE TABLE IF NOT EXISTS segments (
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
@@ -119,7 +122,7 @@ def initialize_library(data_dir):
         connection.execute("BEGIN IMMEDIATE")
         try:
             user_version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if user_version > 2:
+            if user_version > 3:
                 raise ValueError(f"unsupported database version: {user_version}")
             sessions_exists = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions'"
@@ -140,6 +143,29 @@ def initialize_library(data_dir):
             for statement in SCHEMA.split(";"):
                 if statement.strip():
                     connection.execute(statement)
+
+            revision_columns = {
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA table_info(session_revisions)"
+                )
+            }
+            if "package_json" in revision_columns:
+                connection.execute(
+                    "ALTER TABLE session_revisions RENAME TO session_revisions_legacy"
+                )
+                connection.execute(SESSION_REVISIONS_SCHEMA)
+                connection.execute(
+                    """
+                    INSERT INTO session_revisions (
+                        session_id, revision_no, package_hash, raw_json, created_at
+                    )
+                    SELECT session_id, revision_no, package_hash,
+                           package_json, created_at
+                    FROM session_revisions_legacy
+                    """
+                )
+                connection.execute("DROP TABLE session_revisions_legacy")
 
             task_columns = connection.execute(
                 "PRAGMA table_info(growth_tasks)"
@@ -179,12 +205,12 @@ def initialize_library(data_dir):
                         """
                         INSERT INTO session_revisions (
                             session_id, revision_no, package_hash,
-                            package_json, created_at
+                            raw_json, created_at
                         ) VALUES (?, 1, ?, ?, ?)
                         """,
                         (session_id, _package_hash(package), raw_json, imported_at),
                     )
-            connection.execute("PRAGMA user_version = 2")
+            connection.execute("PRAGMA user_version = 3")
             connection.commit()
         except Exception:
             connection.rollback()
@@ -508,7 +534,7 @@ def import_session(data_dir, package):
     session = package["session"]
     session_id = session["id"]
     fingerprint = _import_fingerprint(package)
-    package_json = _canonical_json(package)
+    raw_json = _canonical_json(package)
     package_hash = _package_hash(package)
     created_at = datetime.now(timezone.utc).isoformat()
 
@@ -530,9 +556,9 @@ def import_session(data_dir, package):
                 """
                 SELECT revision_no
                 FROM session_revisions
-                WHERE session_id = ? AND package_hash = ?
+                WHERE session_id = ? AND revision_no = ? AND package_hash = ?
                 """,
-                (session_id, package_hash),
+                (session_id, existing[1], package_hash),
             ).fetchone()
             if prior_revision:
                 return {
@@ -545,10 +571,10 @@ def import_session(data_dir, package):
             connection.execute(
                 """
                 INSERT INTO session_revisions (
-                    session_id, revision_no, package_hash, package_json, created_at
+                    session_id, revision_no, package_hash, raw_json, created_at
                 ) VALUES (?, ?, ?, ?, ?)
                 """,
-                (session_id, revision_no, package_hash, package_json, created_at),
+                (session_id, revision_no, package_hash, raw_json, created_at),
             )
             connection.execute(
                 """
@@ -565,7 +591,7 @@ def import_session(data_dir, package):
                     session.get("role"),
                     session.get("round"),
                     package.get("source", {}).get("input_type"),
-                    package_json,
+                    raw_json,
                     revision_no,
                     session_id,
                 ),
@@ -609,17 +635,17 @@ def import_session(data_dir, package):
                 session.get("round"),
                 package.get("source", {}).get("input_type"),
                 fingerprint,
-                package_json,
+                raw_json,
                 created_at,
             ),
         )
         connection.execute(
             """
             INSERT INTO session_revisions (
-                session_id, revision_no, package_hash, package_json, created_at
+                session_id, revision_no, package_hash, raw_json, created_at
             ) VALUES (?, 1, ?, ?, ?)
             """,
-            (session_id, package_hash, package_json, created_at),
+            (session_id, package_hash, raw_json, created_at),
         )
         _insert_session_projection(connection, package)
 

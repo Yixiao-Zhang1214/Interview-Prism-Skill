@@ -1,3 +1,4 @@
+import copy
 import importlib.util
 import json
 import sqlite3
@@ -145,7 +146,7 @@ class InterviewStoreTests(unittest.TestCase):
             user_version = connection.execute("PRAGMA user_version").fetchone()[0]
         self.assertEqual(1, session_revision)
         self.assertEqual([(1,)], revisions)
-        self.assertEqual(2, user_version)
+        self.assertEqual(3, user_version)
 
     def test_different_session_id_with_same_source_is_duplicate_source(self):
         first = store.import_session(self.data_dir, self.session_package())
@@ -206,7 +207,7 @@ class InterviewStoreTests(unittest.TestCase):
                 "SELECT current_revision, raw_json FROM sessions WHERE session_id = 'int_001'"
             ).fetchone()
             revision_json = connection.execute(
-                "SELECT package_json FROM session_revisions WHERE session_id = 'int_001' ORDER BY revision_no"
+                "SELECT raw_json FROM session_revisions WHERE session_id = 'int_001' ORDER BY revision_no"
             ).fetchall()
             qa_status = connection.execute(
                 "SELECT answer_status FROM qa_chains WHERE session_id = 'int_001'"
@@ -222,6 +223,58 @@ class InterviewStoreTests(unittest.TestCase):
         )
         self.assertEqual("partial", qa_status)
         self.assertEqual([("task_new",)], tasks)
+
+    def test_historical_replay_creates_new_current_revision_and_restores_projections(self):
+        original = self.session_package()
+        original["growth_tasks"] = [
+            {"task_id": "task_a", "title": "Task A", "status": "open"}
+        ]
+        self.add_observation(original, "obs_a", 2)
+        revised = copy.deepcopy(original)
+        revised["session"]["role"] = "Senior Product Manager"
+        revised["qa_chains"][0]["answer_status"] = "partial"
+        revised["growth_tasks"] = [
+            {"task_id": "task_b", "title": "Task B", "status": "in_progress"}
+        ]
+        revised["assessments"][0]["competency_observations"][0].update(
+            {"observation_id": "obs_b", "level": 5}
+        )
+
+        first = store.import_session(self.data_dir, original)
+        second = store.import_session(self.data_dir, revised)
+        replay = store.import_session(self.data_dir, original)
+
+        self.assertEqual(1, first["revision_no"])
+        self.assertEqual(2, second["revision_no"])
+        self.assertEqual(
+            {"status": "revised", "session_id": "int_001", "revision_no": 3},
+            replay,
+        )
+        with sqlite3.connect(self.data_dir / "library.db") as connection:
+            current_revision, current_json = connection.execute(
+                "SELECT current_revision, raw_json FROM sessions WHERE session_id = 'int_001'"
+            ).fetchone()
+            revision_json = connection.execute(
+                "SELECT raw_json FROM session_revisions WHERE session_id = 'int_001' ORDER BY revision_no"
+            ).fetchall()
+            qa_status = connection.execute(
+                "SELECT answer_status FROM qa_chains WHERE session_id = 'int_001'"
+            ).fetchone()[0]
+            task = connection.execute(
+                "SELECT task_id, title FROM growth_tasks WHERE session_id = 'int_001'"
+            ).fetchone()
+            observation = connection.execute(
+                "SELECT observation_id, level FROM observations WHERE session_id = 'int_001'"
+            ).fetchone()
+        self.assertEqual(3, current_revision)
+        self.assertEqual(original, json.loads(current_json))
+        self.assertEqual(
+            ["Product Manager", "Senior Product Manager", "Product Manager"],
+            [json.loads(row[0])["session"]["role"] for row in revision_json],
+        )
+        self.assertEqual("complete", qa_status)
+        self.assertEqual(("task_a", "Task A"), task)
+        self.assertEqual(("obs_a", 2), observation)
 
     def test_same_session_id_with_changed_source_raises_source_conflict(self):
         store.import_session(self.data_dir, self.session_package())
@@ -281,11 +334,119 @@ class InterviewStoreTests(unittest.TestCase):
                 "SELECT current_revision FROM sessions WHERE session_id = 'int_001'"
             ).fetchone()[0]
             revision = connection.execute(
-                "SELECT revision_no, package_json, created_at FROM session_revisions"
+                "SELECT revision_no, raw_json, created_at FROM session_revisions"
             ).fetchone()
-        self.assertEqual(2, user_version)
+        self.assertEqual(3, user_version)
         self.assertEqual(1, current_revision)
         self.assertEqual((1, raw_json, "2026-08-10T02:00:00+00:00"), revision)
+
+    def test_initialize_library_migrates_v2_revision_schema_and_allows_replay(self):
+        db_path = self.data_dir / "library.db"
+        original = self.session_package()
+        revised = copy.deepcopy(original)
+        revised["session"]["role"] = "Senior Product Manager"
+        original_json = json.dumps(
+            original, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        revised_json = json.dumps(
+            revised, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        with sqlite3.connect(db_path) as connection:
+            connection.executescript(
+                """
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    source_type TEXT NOT NULL,
+                    occurred_at TEXT,
+                    company TEXT,
+                    role TEXT,
+                    round_name TEXT,
+                    input_type TEXT,
+                    import_fingerprint TEXT NOT NULL UNIQUE,
+                    raw_json TEXT NOT NULL,
+                    current_revision INTEGER NOT NULL DEFAULT 1,
+                    imported_at TEXT NOT NULL,
+                    deleted_at TEXT
+                );
+                CREATE TABLE session_revisions (
+                    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+                    revision_no INTEGER NOT NULL,
+                    package_hash TEXT NOT NULL,
+                    package_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (session_id, revision_no),
+                    UNIQUE (session_id, package_hash)
+                );
+                PRAGMA user_version = 2;
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO sessions (
+                    session_id, source_type, occurred_at, company, role,
+                    round_name, input_type, import_fingerprint, raw_json,
+                    current_revision, imported_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 2, ?)
+                """,
+                (
+                    "int_001",
+                    "real",
+                    original["session"]["occurred_at"],
+                    original["session"]["company"],
+                    revised["session"]["role"],
+                    original["session"]["round"],
+                    original["source"]["input_type"],
+                    store._import_fingerprint(original),
+                    revised_json,
+                    "2026-08-10T02:00:00+00:00",
+                ),
+            )
+            connection.executemany(
+                """
+                INSERT INTO session_revisions (
+                    session_id, revision_no, package_hash, package_json, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        "int_001",
+                        1,
+                        store._package_hash(original),
+                        original_json,
+                        "2026-08-10T02:00:00+00:00",
+                    ),
+                    (
+                        "int_001",
+                        2,
+                        store._package_hash(revised),
+                        revised_json,
+                        "2026-08-10T03:00:00+00:00",
+                    ),
+                ],
+            )
+
+        store.initialize_library(self.data_dir)
+        replay = store.import_session(self.data_dir, original)
+
+        with sqlite3.connect(db_path) as connection:
+            user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+            columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(session_revisions)")
+            }
+            revisions = connection.execute(
+                "SELECT revision_no, raw_json FROM session_revisions ORDER BY revision_no"
+            ).fetchall()
+        self.assertEqual(3, user_version)
+        self.assertIn("raw_json", columns)
+        self.assertNotIn("package_json", columns)
+        self.assertEqual(
+            {"status": "revised", "session_id": "int_001", "revision_no": 3},
+            replay,
+        )
+        self.assertEqual([1, 2, 3], [row[0] for row in revisions])
+        self.assertEqual(original, json.loads(revisions[-1][1]))
 
     def test_revision_replaces_observations_used_by_profile(self):
         original = self.session_package()

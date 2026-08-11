@@ -11,7 +11,12 @@ import tempfile
 from typing import Dict, List, Optional
 from xml.sax.saxutils import escape
 
-from interview_store import import_session, render_original_qa, validate_session_package
+from interview_store import (
+    GROWTH_TASK_STATUSES,
+    import_session,
+    render_original_qa,
+    validate_session_package,
+)
 
 
 DIMENSION_LABELS = {
@@ -55,6 +60,7 @@ TASK_STATUS_LABELS = {
     "real_validated": "已通过真实面试验证",
     "archived": "已归档",
 }
+assert set(TASK_STATUS_LABELS) == GROWTH_TASK_STATUSES
 
 def _text(value):
     return escape(str(value or ""))
@@ -387,6 +393,7 @@ def _svg_points(points):
 
 
 def render_radar_svg(package: dict) -> str:
+    validate_session_package(package)
     rows = build_single_view(package)["ability_rows"]
     width, height = 760, 560
     if len(rows) < 3:
@@ -907,8 +914,13 @@ def write_artifact_bundle(file_path: str, data_dir: str, output_dir: str) -> Lis
             final_path = destination / name
             staged_path.replace(final_path)
             published.append(final_path)
-    except Exception as publication_error:
+    except BaseException as publication_error:
         rollback_errors = []
+        interrupt_error = (
+            publication_error
+            if not isinstance(publication_error, Exception)
+            else None
+        )
         previous_final_paths = {final_path for _, final_path in replaced}
         for final_path in published:
             if final_path in previous_final_paths:
@@ -917,26 +929,47 @@ def write_artifact_bundle(file_path: str, data_dir: str, output_dir: str) -> Lis
                 final_path.unlink()
             except FileNotFoundError:
                 continue
-            except OSError as error:
+            except BaseException as error:
                 rollback_errors.append(error)
+                if not isinstance(error, Exception):
+                    interrupt_error = error
         for previous_path, final_path in replaced:
             try:
                 previous_path.replace(final_path)
-            except OSError as error:
+            except BaseException as error:
                 rollback_errors.append(error)
+                if not isinstance(error, Exception):
+                    interrupt_error = error
         if rollback_errors:
             recovery = destination / f"{temporary.name}-recovery"
             try:
                 temporary.replace(recovery)
-            except OSError as error:
+            except BaseException as error:
                 rollback_errors.append(error)
+                if not isinstance(error, Exception):
+                    interrupt_error = error
                 recovery = temporary
             retain_temporary = True
             details = "; ".join(str(error) for error in rollback_errors)
-            raise OSError(
+            message = (
                 "artifact publication failed and rollback was incomplete; "
                 f"recovery directory: {recovery}; errors: {details}"
-            ) from publication_error
+            )
+            if interrupt_error is not None:
+                original_args = interrupt_error.args
+                if original_args:
+                    interrupt_error.args = (
+                        f"{original_args[0]}; {message}",
+                        *original_args[1:],
+                    )
+                else:
+                    interrupt_error.args = (message,)
+                interrupt_error.recovery_directory = str(recovery)
+                interrupt_error.rollback_errors = tuple(rollback_errors)
+                if interrupt_error is publication_error:
+                    raise
+                raise interrupt_error from publication_error
+            raise OSError(message) from publication_error
         raise
     finally:
         if not retain_temporary:

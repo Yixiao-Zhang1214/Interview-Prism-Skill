@@ -117,22 +117,190 @@ class InterviewStoreTests(unittest.TestCase):
                 )
             }
         self.assertTrue(
-            {"sessions", "segments", "qa_chains", "observations", "growth_tasks"}
+            {
+                "sessions",
+                "session_revisions",
+                "segments",
+                "qa_chains",
+                "observations",
+                "growth_tasks",
+            }
             <= names
         )
 
-    def test_duplicate_transcript_import_is_idempotent(self):
+    def test_new_source_import_creates_revision_one(self):
+        result = store.import_session(self.data_dir, self.session_package())
+
+        self.assertEqual(
+            {"status": "imported", "session_id": "int_001", "revision_no": 1},
+            result,
+        )
+        with sqlite3.connect(self.data_dir / "library.db") as connection:
+            session_revision = connection.execute(
+                "SELECT current_revision FROM sessions WHERE session_id = 'int_001'"
+            ).fetchone()[0]
+            revisions = connection.execute(
+                "SELECT revision_no FROM session_revisions WHERE session_id = 'int_001'"
+            ).fetchall()
+            user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+        self.assertEqual(1, session_revision)
+        self.assertEqual([(1,)], revisions)
+        self.assertEqual(2, user_version)
+
+    def test_different_session_id_with_same_source_is_duplicate_source(self):
         first = store.import_session(self.data_dir, self.session_package())
         duplicate = store.import_session(
             self.data_dir, self.session_package(session_id="int_002")
         )
 
         self.assertEqual("imported", first["status"])
-        self.assertEqual("duplicate", duplicate["status"])
-        self.assertEqual("int_001", duplicate["duplicate_of"])
+        self.assertEqual(
+            {
+                "status": "duplicate_source",
+                "session_id": "int_002",
+                "existing_session_id": "int_001",
+            },
+            duplicate,
+        )
         with sqlite3.connect(self.data_dir / "library.db") as connection:
             count = connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         self.assertEqual(1, count)
+
+    def test_same_session_source_and_package_is_unchanged(self):
+        package = self.session_package()
+        store.import_session(self.data_dir, package)
+
+        result = store.import_session(self.data_dir, package)
+
+        self.assertEqual(
+            {"status": "unchanged", "session_id": "int_001", "revision_no": 1},
+            result,
+        )
+        with sqlite3.connect(self.data_dir / "library.db") as connection:
+            revision_count = connection.execute(
+                "SELECT COUNT(*) FROM session_revisions"
+            ).fetchone()[0]
+        self.assertEqual(1, revision_count)
+
+    def test_same_session_and_source_with_changed_package_creates_revision(self):
+        original = self.session_package()
+        original["growth_tasks"] = [
+            {"task_id": "task_old", "title": "Old task", "status": "open"}
+        ]
+        store.import_session(self.data_dir, original)
+        revised = self.session_package()
+        revised["session"]["role"] = "Senior Product Manager"
+        revised["qa_chains"][0]["answer_status"] = "partial"
+        revised["growth_tasks"] = [
+            {"task_id": "task_new", "title": "New task", "status": "in_progress"}
+        ]
+
+        result = store.import_session(self.data_dir, revised)
+
+        self.assertEqual(
+            {"status": "revised", "session_id": "int_001", "revision_no": 2},
+            result,
+        )
+        with sqlite3.connect(self.data_dir / "library.db") as connection:
+            current_revision, current_json = connection.execute(
+                "SELECT current_revision, raw_json FROM sessions WHERE session_id = 'int_001'"
+            ).fetchone()
+            revision_json = connection.execute(
+                "SELECT package_json FROM session_revisions WHERE session_id = 'int_001' ORDER BY revision_no"
+            ).fetchall()
+            qa_status = connection.execute(
+                "SELECT answer_status FROM qa_chains WHERE session_id = 'int_001'"
+            ).fetchone()[0]
+            tasks = connection.execute(
+                "SELECT task_id FROM growth_tasks WHERE session_id = 'int_001'"
+            ).fetchall()
+        self.assertEqual(2, current_revision)
+        self.assertEqual("Senior Product Manager", json.loads(current_json)["session"]["role"])
+        self.assertEqual(
+            ["Product Manager", "Senior Product Manager"],
+            [json.loads(row[0])["session"]["role"] for row in revision_json],
+        )
+        self.assertEqual("partial", qa_status)
+        self.assertEqual([("task_new",)], tasks)
+
+    def test_same_session_id_with_changed_source_raises_source_conflict(self):
+        store.import_session(self.data_dir, self.session_package())
+        changed_source = self.session_package()
+        changed_source["source"]["blocks"][1]["text"] = "new answer"
+        changed_source["segments"][1]["text"] = "new answer"
+        changed_source["segments"][1]["end_char"] = 10
+
+        with self.assertRaisesRegex(ValueError, "source conflict.*int_001"):
+            store.import_session(self.data_dir, changed_source)
+
+        with sqlite3.connect(self.data_dir / "library.db") as connection:
+            revision_count = connection.execute(
+                "SELECT COUNT(*) FROM session_revisions"
+            ).fetchone()[0]
+        self.assertEqual(1, revision_count)
+
+    def test_initialize_library_migrates_v1_raw_json_to_revision_one(self):
+        db_path = self.data_dir / "library.db"
+        package = self.session_package()
+        raw_json = json.dumps(
+            package, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        with sqlite3.connect(db_path) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    source_type TEXT NOT NULL,
+                    occurred_at TEXT,
+                    company TEXT,
+                    role TEXT,
+                    round_name TEXT,
+                    input_type TEXT,
+                    import_fingerprint TEXT NOT NULL UNIQUE,
+                    raw_json TEXT NOT NULL,
+                    imported_at TEXT NOT NULL,
+                    deleted_at TEXT
+                );
+                PRAGMA user_version = 1;
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO sessions (
+                    session_id, source_type, import_fingerprint, raw_json, imported_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                ("int_001", "real", "legacy-source", raw_json, "2026-08-10T02:00:00+00:00"),
+            )
+
+        store.initialize_library(self.data_dir)
+
+        with sqlite3.connect(db_path) as connection:
+            user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+            current_revision = connection.execute(
+                "SELECT current_revision FROM sessions WHERE session_id = 'int_001'"
+            ).fetchone()[0]
+            revision = connection.execute(
+                "SELECT revision_no, package_json, created_at FROM session_revisions"
+            ).fetchone()
+        self.assertEqual(2, user_version)
+        self.assertEqual(1, current_revision)
+        self.assertEqual((1, raw_json, "2026-08-10T02:00:00+00:00"), revision)
+
+    def test_revision_replaces_observations_used_by_profile(self):
+        original = self.session_package()
+        self.add_observation(original, "obs_original", 2)
+        store.import_session(self.data_dir, original)
+        revised = self.session_package()
+        self.add_observation(revised, "obs_revised", 5)
+
+        store.import_session(self.data_dir, revised)
+        profile = store.build_profile(self.data_dir)
+
+        self.assertEqual(
+            {"average": 5.0, "evidence_count": 1, "session_count": 1},
+            profile["formal_profile"]["structured_communication"],
+        )
 
     def test_unknown_segment_reference_rejects_whole_import(self):
         package = self.session_package()

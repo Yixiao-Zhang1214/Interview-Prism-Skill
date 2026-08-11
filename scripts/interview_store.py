@@ -23,8 +23,19 @@ CREATE TABLE IF NOT EXISTS sessions (
     input_type TEXT,
     import_fingerprint TEXT NOT NULL UNIQUE,
     raw_json TEXT NOT NULL,
+    current_revision INTEGER NOT NULL DEFAULT 1 CHECK (current_revision >= 1),
     imported_at TEXT NOT NULL,
     deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS session_revisions (
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    revision_no INTEGER NOT NULL CHECK (revision_no >= 1),
+    package_hash TEXT NOT NULL,
+    package_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, revision_no),
+    UNIQUE (session_id, package_hash)
 );
 
 CREATE TABLE IF NOT EXISTS segments (
@@ -100,7 +111,52 @@ def initialize_library(data_dir):
     data_path.mkdir(parents=True, exist_ok=True)
     db_path = data_path / "library.db"
     with sqlite3.connect(db_path) as connection:
-        connection.executescript(SCHEMA)
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if user_version > 2:
+                raise ValueError(f"unsupported database version: {user_version}")
+            sessions_exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions'"
+            ).fetchone()
+            if sessions_exists and user_version < 2:
+                columns = {
+                    row[1] for row in connection.execute("PRAGMA table_info(sessions)")
+                }
+                if "current_revision" not in columns:
+                    connection.execute(
+                        """
+                        ALTER TABLE sessions
+                        ADD COLUMN current_revision INTEGER NOT NULL DEFAULT 1
+                        CHECK (current_revision >= 1)
+                        """
+                    )
+
+            for statement in SCHEMA.split(";"):
+                if statement.strip():
+                    connection.execute(statement)
+
+            if sessions_exists and user_version < 2:
+                legacy_sessions = connection.execute(
+                    "SELECT session_id, raw_json, imported_at FROM sessions"
+                ).fetchall()
+                for session_id, raw_json, imported_at in legacy_sessions:
+                    package = json.loads(raw_json)
+                    connection.execute(
+                        """
+                        INSERT INTO session_revisions (
+                            session_id, revision_no, package_hash,
+                            package_json, created_at
+                        ) VALUES (?, 1, ?, ?, ?)
+                        """,
+                        (session_id, _package_hash(package), raw_json, imported_at),
+                    )
+            connection.execute("PRAGMA user_version = 2")
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
     return db_path
 
 
@@ -117,6 +173,10 @@ def _import_fingerprint(package):
         ),
     }
     return hashlib.sha256(_canonical_json(material).encode("utf-8")).hexdigest()
+
+
+def _package_hash(package):
+    return hashlib.sha256(_canonical_json(package).encode("utf-8")).hexdigest()
 
 
 def _observations(package):
@@ -327,34 +387,189 @@ def validate_session_package(package):
         _validate_semantic_references(candidate, qa_chain_ids, segment_ids)
 
 
+def _insert_session_projection(connection, package):
+    session = package["session"]
+    for segment in package.get("segments", []):
+        connection.execute(
+            """
+            INSERT INTO segments (
+                session_id, segment_id, sequence_no, speaker_role,
+                speaker_label, event_type, text, start_time, end_time, confidence
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session["id"],
+                segment["segment_id"],
+                segment["sequence_no"],
+                segment.get("speaker_role", "unknown"),
+                segment.get("speaker_label"),
+                segment.get("event_type"),
+                segment["text"],
+                segment.get("start_time"),
+                segment.get("end_time"),
+                segment.get("confidence"),
+            ),
+        )
+
+    for chain in package.get("qa_chains", []):
+        connection.execute(
+            """
+            INSERT INTO qa_chains (
+                session_id, qa_chain_id, sequence_no, direction,
+                answer_status, data_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session["id"],
+                chain["qa_chain_id"],
+                chain["sequence_no"],
+                chain.get("direction", "interviewer_to_candidate"),
+                chain.get("answer_status", "partial"),
+                _canonical_json(chain),
+            ),
+        )
+
+    for observation in _observations(package):
+        connection.execute(
+            """
+            INSERT INTO observations (
+                session_id, observation_id, dimension, level, confidence,
+                evidence_json, data_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session["id"],
+                observation["observation_id"],
+                observation["dimension"],
+                observation.get("level"),
+                observation.get("confidence"),
+                _canonical_json(observation.get("evidence_segment_ids", [])),
+                _canonical_json(observation),
+            ),
+        )
+
+    for index, task in enumerate(package.get("growth_tasks", []), start=1):
+        task_id = task.get("task_id") or f"task_{session['id']}_{index:03d}"
+        connection.execute(
+            """
+            INSERT INTO growth_tasks (
+                task_id, session_id, source_type, title, task_type, status,
+                acceptance_json, data_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                task_id,
+                session["id"],
+                session["source_type"],
+                task["title"],
+                task.get("task_type"),
+                task.get("status", "open"),
+                _canonical_json(task.get("acceptance_criteria", [])),
+                _canonical_json(task),
+            ),
+        )
+
+
 def import_session(data_dir, package):
     validate_session_package(package)
     db_path = initialize_library(data_dir)
     session = package["session"]
+    session_id = session["id"]
     fingerprint = _import_fingerprint(package)
+    package_json = _canonical_json(package)
+    package_hash = _package_hash(package)
+    created_at = datetime.now(timezone.utc).isoformat()
 
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("BEGIN IMMEDIATE")
+        existing = connection.execute(
+            """
+            SELECT import_fingerprint, current_revision
+            FROM sessions
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        if existing:
+            if existing[0] != fingerprint:
+                raise ValueError(f"source conflict for session_id: {session_id}")
+            prior_revision = connection.execute(
+                """
+                SELECT revision_no
+                FROM session_revisions
+                WHERE session_id = ? AND package_hash = ?
+                """,
+                (session_id, package_hash),
+            ).fetchone()
+            if prior_revision:
+                return {
+                    "status": "unchanged",
+                    "session_id": session_id,
+                    "revision_no": prior_revision[0],
+                }
+
+            revision_no = existing[1] + 1
+            connection.execute(
+                """
+                INSERT INTO session_revisions (
+                    session_id, revision_no, package_hash, package_json, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (session_id, revision_no, package_hash, package_json, created_at),
+            )
+            connection.execute(
+                """
+                UPDATE sessions
+                SET source_type = ?, occurred_at = ?, company = ?, role = ?,
+                    round_name = ?, input_type = ?, raw_json = ?,
+                    current_revision = ?
+                WHERE session_id = ?
+                """,
+                (
+                    session["source_type"],
+                    session.get("occurred_at"),
+                    session.get("company"),
+                    session.get("role"),
+                    session.get("round"),
+                    package.get("source", {}).get("input_type"),
+                    package_json,
+                    revision_no,
+                    session_id,
+                ),
+            )
+            for table in ("growth_tasks", "observations", "qa_chains", "segments"):
+                connection.execute(
+                    f"DELETE FROM {table} WHERE session_id = ?", (session_id,)
+                )
+            _insert_session_projection(connection, package)
+            return {
+                "status": "revised",
+                "session_id": session_id,
+                "revision_no": revision_no,
+            }
+
         duplicate = connection.execute(
             "SELECT session_id FROM sessions WHERE import_fingerprint = ?",
             (fingerprint,),
         ).fetchone()
         if duplicate:
             return {
-                "status": "duplicate",
-                "session_id": duplicate[0],
-                "duplicate_of": duplicate[0],
+                "status": "duplicate_source",
+                "session_id": session_id,
+                "existing_session_id": duplicate[0],
             }
 
         connection.execute(
             """
             INSERT INTO sessions (
                 session_id, source_type, occurred_at, company, role, round_name,
-                input_type, import_fingerprint, raw_json, imported_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                input_type, import_fingerprint, raw_json, current_revision,
+                imported_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
             """,
             (
-                session["id"],
+                session_id,
                 session["source_type"],
                 session.get("occurred_at"),
                 session.get("company"),
@@ -362,95 +577,24 @@ def import_session(data_dir, package):
                 session.get("round"),
                 package.get("source", {}).get("input_type"),
                 fingerprint,
-                _canonical_json(package),
-                datetime.now(timezone.utc).isoformat(),
+                package_json,
+                created_at,
             ),
         )
-
-        for segment in package.get("segments", []):
-            connection.execute(
-                """
-                INSERT INTO segments (
-                    session_id, segment_id, sequence_no, speaker_role,
-                    speaker_label, event_type, text, start_time, end_time, confidence
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    session["id"],
-                    segment["segment_id"],
-                    segment["sequence_no"],
-                    segment.get("speaker_role", "unknown"),
-                    segment.get("speaker_label"),
-                    segment.get("event_type"),
-                    segment["text"],
-                    segment.get("start_time"),
-                    segment.get("end_time"),
-                    segment.get("confidence"),
-                ),
-            )
-
-        for chain in package.get("qa_chains", []):
-            connection.execute(
-                """
-                INSERT INTO qa_chains (
-                    session_id, qa_chain_id, sequence_no, direction,
-                    answer_status, data_json
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    session["id"],
-                    chain["qa_chain_id"],
-                    chain["sequence_no"],
-                    chain.get("direction", "interviewer_to_candidate"),
-                    chain.get("answer_status", "partial"),
-                    _canonical_json(chain),
-                ),
-            )
-
-        for observation in _observations(package):
-            connection.execute(
-                """
-                INSERT INTO observations (
-                    session_id, observation_id, dimension, level, confidence,
-                    evidence_json, data_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    session["id"],
-                    observation["observation_id"],
-                    observation["dimension"],
-                    observation.get("level"),
-                    observation.get("confidence"),
-                    _canonical_json(observation.get("evidence_segment_ids", [])),
-                    _canonical_json(observation),
-                ),
-            )
-
-        for index, task in enumerate(package.get("growth_tasks", []), start=1):
-            task_id = task.get("task_id") or f"task_{session['id']}_{index:03d}"
-            connection.execute(
-                """
-                INSERT INTO growth_tasks (
-                    task_id, session_id, source_type, title, task_type, status,
-                    acceptance_json, data_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    task_id,
-                    session["id"],
-                    session["source_type"],
-                    task["title"],
-                    task.get("task_type"),
-                    task.get("status", "open"),
-                    _canonical_json(task.get("acceptance_criteria", [])),
-                    _canonical_json(task),
-                ),
-            )
+        connection.execute(
+            """
+            INSERT INTO session_revisions (
+                session_id, revision_no, package_hash, package_json, created_at
+            ) VALUES (?, 1, ?, ?, ?)
+            """,
+            (session_id, package_hash, package_json, created_at),
+        )
+        _insert_session_projection(connection, package)
 
     return {
         "status": "imported",
-        "session_id": session["id"],
-        "duplicate_of": None,
+        "session_id": session_id,
+        "revision_no": 1,
     }
 
 

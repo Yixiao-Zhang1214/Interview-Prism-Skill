@@ -896,7 +896,6 @@ def write_artifact_bundle(file_path: str, data_dir: str, output_dir: str) -> Lis
     }
     temporary = Path(tempfile.mkdtemp(prefix=".interview-report-", dir=destination))
     previous = temporary / "previous"
-    replaced = []
     published = []
     retain_temporary = False
     try:
@@ -908,7 +907,6 @@ def write_artifact_bundle(file_path: str, data_dir: str, output_dir: str) -> Lis
             final_path = destination / name
             if final_path.exists():
                 final_path.replace(previous / name)
-                replaced.append((previous / name, final_path))
         for name in contents:
             staged_path = temporary / name
             final_path = destination / name
@@ -921,7 +919,15 @@ def write_artifact_bundle(file_path: str, data_dir: str, output_dir: str) -> Lis
             if not isinstance(publication_error, Exception)
             else None
         )
-        previous_final_paths = {final_path for _, final_path in replaced}
+        backups = (
+            [
+                (previous_path, destination / previous_path.name)
+                for previous_path in previous.iterdir()
+            ]
+            if previous.is_dir()
+            else []
+        )
+        previous_final_paths = {final_path for _, final_path in backups}
         for final_path in published:
             if final_path in previous_final_paths:
                 continue
@@ -933,7 +939,7 @@ def write_artifact_bundle(file_path: str, data_dir: str, output_dir: str) -> Lis
                 rollback_errors.append(error)
                 if not isinstance(error, Exception):
                     interrupt_error = error
-        for previous_path, final_path in replaced:
+        for previous_path, final_path in backups:
             try:
                 previous_path.replace(final_path)
             except BaseException as error:

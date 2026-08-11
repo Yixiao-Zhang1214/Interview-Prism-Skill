@@ -674,6 +674,60 @@ class ReportCliTests(unittest.TestCase):
                 previous_contents[backed_up_name],
             )
 
+    def test_bundle_interrupt_after_backup_move_restores_unrecorded_backup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            package = sample_package(session_id="post_move_interrupt_session")
+            revised = copy.deepcopy(package)
+            revised["growth_tasks"][0]["title"] = "Post-move interruption"
+            package_path = root / "source.json"
+            revised_path = root / "revised.json"
+            data_dir = root / "library"
+            output_dir = root / "outputs"
+            package_path.write_text(
+                json.dumps(package, ensure_ascii=False), encoding="utf-8"
+            )
+            revised_path.write_text(
+                json.dumps(revised, ensure_ascii=False), encoding="utf-8"
+            )
+            write_artifact_bundle(str(package_path), str(data_dir), str(output_dir))
+            previous_contents = {
+                path.name: path.read_bytes() for path in output_dir.iterdir()
+            }
+            original_replace = Path.replace
+            interrupted_backup = {"name": None}
+
+            def move_backup_then_interrupt(path, target):
+                if (
+                    interrupted_backup["name"] is None
+                    and path.parent == output_dir
+                    and target.parent.name == "previous"
+                ):
+                    interrupted_backup["name"] = path.name
+                    original_replace(path, target)
+                    raise KeyboardInterrupt("simulated interrupt after backup move")
+                return original_replace(path, target)
+
+            with patch.object(Path, "replace", new=move_backup_then_interrupt):
+                with self.assertRaisesRegex(
+                    KeyboardInterrupt, "simulated interrupt after backup move"
+                ):
+                    write_artifact_bundle(
+                        str(revised_path), str(data_dir), str(output_dir)
+                    )
+
+            self.assertIsNotNone(interrupted_backup["name"])
+            self.assertEqual(
+                previous_contents,
+                {path.name: path.read_bytes() for path in output_dir.iterdir()},
+            )
+            self.assertFalse(
+                any(
+                    path.name.startswith(".interview-report-")
+                    for path in output_dir.iterdir()
+                )
+            )
+
     def test_bundle_publication_failure_then_retry_converges_ledger_and_artifacts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

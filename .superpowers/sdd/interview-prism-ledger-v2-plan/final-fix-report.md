@@ -91,3 +91,48 @@ No third-party runtime dependency was added.
 
 - No unresolved correctness concerns found.
 - Operationally, an incomplete rollback intentionally leaves a recovery directory in the output directory. The raised error or interrupt includes its exact path; automatic deletion would risk destroying the only remaining backup.
+
+## Additional Targeted Final Fix Round
+
+### Finding
+
+The backup move previously happened before its in-memory `replaced` entry was appended. A `KeyboardInterrupt` raised after `Path.replace` completed the filesystem move but before bookkeeping resumed left the only old artifact undiscoverable by rollback, and `finally` then deleted it with the temporary directory.
+
+### RED Evidence
+
+System Python 3.9.6 ran the new post-move interruption regression together with the existing pre-move interruption regression:
+
+```text
+/usr/bin/python3 -m unittest -v \
+  scripts.test_interview_report.ReportCliTests.test_bundle_interrupt_after_backup_move_restores_unrecorded_backup \
+  scripts.test_interview_report.ReportCliTests.test_bundle_interrupt_after_backup_retains_recovery_and_reraises_interrupt
+```
+
+Observed before the production fix: 2 tests ran; the new post-move test failed because the restored output bundle was missing the artifact moved before interruption, while the existing pre-move test passed.
+
+### Fix
+
+Rollback now discovers the backup files physically present in the temporary `previous/` directory and derives their final destinations from those files. This makes the filesystem the recovery source of truth:
+
+- If replace completed and then raised, the moved backup is discovered and restored.
+- If replace raised before moving, no backup is discovered and the untouched old final artifact remains in place.
+- If restoration fails, the existing recovery-directory retention and surfacing behavior remains active.
+- The original `KeyboardInterrupt` is re-raised after successful rollback.
+
+### GREEN Evidence
+
+Focused publication suite covering post-move interruption, pre-move interruption, ordinary publication rollback, incomplete rollback recovery, and failure-then-retry convergence:
+
+- Python 3.9.6: 5 tests passed in 0.173s.
+- Python 3.12.13: 5 tests passed in 0.229s.
+
+Complete suites, superseding the earlier 74-test counts after adding this regression:
+
+- System Python 3.9.6: 75 tests passed in 1.853s.
+- Bundled Python 3.12.13: 75 tests passed in 1.836s.
+
+### Additional Self-Review and Concerns
+
+- The change is limited to publication rollback bookkeeping and its regression test; ledger import, migration, projection, and report rendering paths are unchanged.
+- Successful publication behavior is unchanged because backup discovery runs only in the exception path.
+- No unresolved correctness concerns found.

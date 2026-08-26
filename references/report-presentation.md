@@ -25,15 +25,15 @@ Keep raw IDs and English dimension codes out of the main conclusions. The render
 
 ## Per-interview artifact bundle
 
-Every accepted interview, including the first, produces one shared timestamp stem and five report/data files:
+Every accepted interview, including the first, produces one shared timestamp stem and five Markdown reports:
 
 - `IP-{R|M}-YYYYMMDD-HHMM-analysis.md`
 - `IP-{R|M}-YYYYMMDD-HHMM-qa-original.md`
-- `IP-{R|M}-YYYYMMDD-HHMM-session.json`
 - `IP-{R|M}-YYYYMMDD-HHMM-ability-model.md`
 - `IP-{R|M}-YYYYMMDD-HHMM-frequent-questions.md`
+- `IP-{R|M}-YYYYMMDD-HHMM-comparison.md`
 
-The analysis embeds a Mermaid ability chart directly in the Markdown report. A first-session ability model explicitly has no trend; a first-session question record explicitly has no high-frequency claim. Later bundles rebuild the cumulative documents from all non-deleted sessions in the same ledger.
+The analysis embeds a Mermaid ability chart directly in the Markdown report. The comparison report includes all non-deleted sessions in the same ledger up to the current bundle. A first-session ability model explicitly has no trend; a first-session question record explicitly has no high-frequency claim; a first-session comparison explicitly reports insufficient sample. Later bundles rebuild all cumulative reports from the current ledger.
 
 ## Comparison order
 

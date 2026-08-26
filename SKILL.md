@@ -136,7 +136,7 @@ Choose a user data directory outside this Skill. Do not store interview archives
 
 ## Output Contract
 
-- For every newly accepted interview, including the first one, run `interview_report.py bundle`. Return the primary report directly in chat and save these timestamp-prefixed artifacts: `analysis.md`, `qa-original.md`, `session.json`, `ability-model.md`, and `frequent-questions.md`. The radar SVG is a supporting asset, not a sixth report.
+- For every newly accepted interview, including the first one, run `interview_report.py bundle`. Return the primary report directly in chat and save exactly five timestamp-prefixed Markdown reports: `analysis.md`, `qa-original.md`, `ability-model.md`, `frequent-questions.md`, and `comparison.md`. Keep canonical structured session data inside the local ledger; do not expose `session.json` as a user-facing artifact.
 - Derive the shared stem from the interview occurrence time: `IP-R-YYYYMMDD-HHMM` for real interviews and `IP-M-YYYYMMDD-HHMM` for mock interviews. Ask for the interview time when it is missing; never substitute import time. Add `-01`, `-02`, and so on only for different sessions in the same minute.
 - On the first input, label the ability model as an initial snapshot with no trend, and every question as a first occurrence rather than falsely calling it high frequency. On later inputs, preserve session artifacts and regenerate the cumulative same-ledger ability model and question-management documents.
 - Use Markdown for every report. The presentation layer has no HTML workflow.

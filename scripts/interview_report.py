@@ -787,11 +787,20 @@ def render_frequent_questions_text(packages: List[Dict]) -> str:
 def _resolve_artifact_stem(output_dir: Path, package: dict) -> str:
     base = artifact_stem(package["session"])
     session_id = package["session"].get("id")
+    marker = f"<!-- interview-prism-session:{session_id} -->"
     for index in range(100):
         candidate = base if index == 0 else f"{base}-{index:02d}"
         paths = list(output_dir.glob(f"{candidate}-*"))
         if not paths:
             return candidate
+        analysis_path = output_dir / f"{candidate}-analysis.md"
+        if analysis_path.is_file():
+            try:
+                first_line = analysis_path.open(encoding="utf-8").readline().strip()
+            except OSError:
+                first_line = ""
+            if first_line == marker:
+                return candidate
         session_path = output_dir / f"{candidate}-session.json"
         if session_path.is_file():
             try:
@@ -830,13 +839,15 @@ def write_artifact_bundle(file_path: str, data_dir: str, output_dir: str) -> Lis
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
     stem = _resolve_artifact_stem(destination, package)
+    marker = f'<!-- interview-prism-session:{package["session"]["id"]} -->\n'
     contents = {
-        f"{stem}-analysis.md": render_single_text(package),
+        f"{stem}-analysis.md": marker + render_single_text(package),
         f"{stem}-qa-original.md": render_original_qa(data_dir, package["session"]["id"]),
-        f"{stem}-session.json": json.dumps(package, ensure_ascii=False, indent=2) + "\n",
         f"{stem}-ability-model.md": render_ability_model_text(packages),
         f"{stem}-frequent-questions.md": render_frequent_questions_text(packages),
+        f"{stem}-comparison.md": render_comparison_text(packages),
     }
+    obsolete_names = [f"{stem}-session.json"]
     temporary = Path(tempfile.mkdtemp(prefix=".interview-report-", dir=destination))
     previous = temporary / "previous"
     published = []
@@ -846,7 +857,7 @@ def write_artifact_bundle(file_path: str, data_dir: str, output_dir: str) -> Lis
             (temporary / name).write_text(content, encoding="utf-8")
 
         previous.mkdir()
-        for name in contents:
+        for name in list(contents) + obsolete_names:
             final_path = destination / name
             if final_path.exists():
                 final_path.replace(previous / name)

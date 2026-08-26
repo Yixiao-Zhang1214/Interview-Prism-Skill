@@ -389,16 +389,18 @@ class ReportCliTests(unittest.TestCase):
             expected = {
                 "IP-R-20260702-1330-analysis.md",
                 "IP-R-20260702-1330-qa-original.md",
-                "IP-R-20260702-1330-session.json",
                 "IP-R-20260702-1330-ability-model.md",
                 "IP-R-20260702-1330-frequent-questions.md",
+                "IP-R-20260702-1330-comparison.md",
             }
             self.assertEqual({item.name for item in output_dir.iterdir()}, expected)
             analysis = (output_dir / "IP-R-20260702-1330-analysis.md").read_text(encoding="utf-8")
             self.assertIn("```mermaid", analysis)
-            self.assertEqual(
-                json.loads((output_dir / "IP-R-20260702-1330-session.json").read_text(encoding="utf-8")),
-                package,
+            self.assertIn(
+                "# 面试交叉分析",
+                (output_dir / "IP-R-20260702-1330-comparison.md").read_text(
+                    encoding="utf-8"
+                ),
             )
             self.assertIn(
                 "项目解决了什么需求？",
@@ -749,17 +751,11 @@ class ReportCliTests(unittest.TestCase):
                 revision_count = connection.execute(
                     "SELECT COUNT(*) FROM session_revisions WHERE session_id = 'retry_session'"
                 ).fetchone()[0]
-            session_artifact = json.loads(
-                (output_dir / "IP-R-20260702-1330-session.json").read_text(
-                    encoding="utf-8"
-                )
-            )
             analysis = (
                 output_dir / "IP-R-20260702-1330-analysis.md"
             ).read_text(encoding="utf-8")
             self.assertEqual(2, current_revision)
             self.assertEqual(2, revision_count)
-            self.assertEqual(revised, session_artifact)
             self.assertIn("Retry converged task", analysis)
 
     def test_bundle_revision_uses_persisted_current_cumulative_ledger(self):
@@ -789,14 +785,6 @@ class ReportCliTests(unittest.TestCase):
             import_session(data_dir, other)
             write_artifact_bundle(str(revised_path), str(data_dir), str(output_dir))
 
-            self.assertEqual(
-                json.loads(
-                    (output_dir / "IP-R-20260702-1330-session.json").read_text(
-                        encoding="utf-8"
-                    )
-                ),
-                revised,
-            )
             self.assertIn(
                 "| 问题定义 | 3.50 / 5 | 2 | 2 |",
                 (output_dir / "IP-R-20260702-1330-ability-model.md").read_text(

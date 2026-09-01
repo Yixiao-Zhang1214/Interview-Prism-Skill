@@ -162,3 +162,45 @@ Choose a user data directory outside this Skill. Do not store interview archives
 - `references/prompts-reports.md`: read for P12–P13.
 - `references/prompts-validation.md`: read before accepting or repairing model output.
 - `references/report-presentation.md`: read before rendering a single-interview or comparison text report.
+
+## 长期面试错题本
+
+错题本是跨面试长期维护的独立资产，不属于单场面试固定输出的五份报告。结构化事实保存在 `<data-dir>/library.db`，可读版本保存在 `<data-dir>/interview-answer-notebook.md`。
+
+### 强制规则
+
+- 禁止自动收录分析报告中的“最佳回答”或任何 AI 草稿。
+- 新增、更新、删除和恢复都必须先生成操作预览，再取得用户对该预览的明确确认。
+- “帮我优化”“这个回答不错”“以后可以用”等表达不构成写入确认。
+- 只有“确认收录”“确认更新”“确认删除”“确认恢复”或语义同等明确的回复才能执行对应操作。
+- 用户在确认前改变内容时，废弃旧操作并生成新预览；不得沿用旧确认。
+- 每次只操作一个条目 ID。不得顺便润色、重排、合并或修复其他错题。
+- 任何非目标条目或目录项发生变化时，必须中止并报告未写入。
+
+### 对话流程
+
+1. 将用户输入或共同整理的答案提炼为候选条目，展示标准问题、岗位、能力类型、原回答问题、最优回答、来源、关联面试和验证状态。
+2. 明确说明“尚未写入错题本”，并询问是否确认收录或更新。
+3. 使用 `scripts/answer_notebook.py` 的 `propose-*` 命令生成一次性操作 ID，并向用户展示返回的预览。
+4. 仅在用户明确确认该操作后，使用 `confirm --operation-id <ID>` 执行。
+5. 返回条目 ID、版本和实际修改区域。取消、过期或冲突时明确说明没有写入。
+
+### 命令接口
+
+```bash
+python3 scripts/answer_notebook.py --data-dir <ledger目录> propose-add --payload '<JSON对象>'
+python3 scripts/answer_notebook.py --data-dir <ledger目录> propose-update --entry-id NB-0001 --changes '<JSON对象>'
+python3 scripts/answer_notebook.py --data-dir <ledger目录> propose-delete --entry-id NB-0001
+python3 scripts/answer_notebook.py --data-dir <ledger目录> propose-restore --entry-id NB-0001
+python3 scripts/answer_notebook.py --data-dir <ledger目录> confirm --operation-id OP-xxxxxxxx
+```
+
+查询是只读操作，不需要确认：
+
+```bash
+python3 scripts/answer_notebook.py --data-dir <ledger目录> search --keyword 推荐策略
+python3 scripts/answer_notebook.py --data-dir <ledger目录> search --ability-type 产品设计 --validation-status unvalidated
+python3 scripts/answer_notebook.py --data-dir <ledger目录> get --entry-id NB-0001
+```
+
+`answer_source` 仅使用 `user` 或 `co_created`；`validation_status` 仅使用 `unvalidated`、`used_in_real_interview` 或 `real_validated`。

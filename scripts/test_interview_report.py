@@ -89,6 +89,29 @@ def sample_package(source_type="real", session_id="int_test"):
 
 
 class SingleReportTests(unittest.TestCase):
+    def test_artifact_name_requires_role(self):
+        for role in (None, "", "  ", "../\\:*?<>|"):
+            with self.subTest(role=role):
+                session = sample_package()["session"]
+                session["role"] = role
+                with self.assertRaisesRegex(ValueError, "role"):
+                    artifact_stem(session)
+
+    def test_artifact_name_sanitizes_role_and_limits_bytes(self):
+        session = sample_package()["session"]
+        session["role"] = " AI/产品: 实习岗 "
+        self.assertEqual("AI_产品__实习岗-IP-R-20260702-1330", artifact_stem(session))
+        session["role"] = "产品经理" * 100
+        name = artifact_stem(session) + "-interview-answer-notebook.md"
+        self.assertLess(len(name.encode("utf-8")), 255)
+        self.assertEqual(name, Path(name).name)
+
+    def test_different_roles_have_distinct_artifact_names(self):
+        session = sample_package()["session"]
+        first = artifact_stem(session)
+        session["role"] = "推荐策略产品经理"
+        self.assertNotEqual(first, artifact_stem(session))
+
     def test_task_status_labels_cover_exactly_the_canonical_statuses(self):
         self.assertEqual(GROWTH_TASK_STATUSES, set(TASK_STATUS_LABELS))
 
@@ -178,11 +201,11 @@ class SingleReportTests(unittest.TestCase):
 
     def test_artifact_stem_uses_interview_time_and_ledger(self):
         self.assertEqual(
-            artifact_stem(sample_package()["session"]), "IP-R-20260702-1330"
+            artifact_stem(sample_package()["session"]), "AI产品岗实习-IP-R-20260702-1330"
         )
         self.assertEqual(
             artifact_stem(sample_package("mock")["session"]),
-            "IP-M-20260702-1330",
+            "AI产品岗实习-IP-M-20260702-1330",
         )
 
     def test_single_text_renders_every_assessed_interviewer_question(self):
@@ -388,30 +411,30 @@ class ReportCliTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             expected = {
-                "IP-R-20260702-1330-analysis.md",
-                "IP-R-20260702-1330-qa-original.md",
-                "IP-R-20260702-1330-ability-model.md",
-                "IP-R-20260702-1330-frequent-questions.md",
-                "IP-R-20260702-1330-comparison.md",
-                "IP-R-20260702-1330-interview-answer-notebook.md",
+                "AI产品岗实习-IP-R-20260702-1330-analysis.md",
+                "AI产品岗实习-IP-R-20260702-1330-qa-original.md",
+                "AI产品岗实习-IP-R-20260702-1330-ability-model.md",
+                "AI产品岗实习-IP-R-20260702-1330-frequent-questions.md",
+                "AI产品岗实习-IP-R-20260702-1330-comparison.md",
+                "AI产品岗实习-IP-R-20260702-1330-interview-answer-notebook.md",
             }
             self.assertEqual({item.name for item in output_dir.iterdir()}, expected)
             self.assertIn(
                 "暂无已确认收录的错题",
-                (output_dir / "IP-R-20260702-1330-interview-answer-notebook.md").read_text(encoding="utf-8"),
+                (output_dir / "AI产品岗实习-IP-R-20260702-1330-interview-answer-notebook.md").read_text(encoding="utf-8"),
             )
             self.assertFalse((data_dir / "interview-answer-notebook.md").exists())
-            analysis = (output_dir / "IP-R-20260702-1330-analysis.md").read_text(encoding="utf-8")
+            analysis = (output_dir / "AI产品岗实习-IP-R-20260702-1330-analysis.md").read_text(encoding="utf-8")
             self.assertIn("```mermaid", analysis)
             self.assertIn(
                 "# 面试交叉分析",
-                (output_dir / "IP-R-20260702-1330-comparison.md").read_text(
+                (output_dir / "AI产品岗实习-IP-R-20260702-1330-comparison.md").read_text(
                     encoding="utf-8"
                 ),
             )
             self.assertIn(
                 "项目解决了什么需求？",
-                (output_dir / "IP-R-20260702-1330-qa-original.md").read_text(encoding="utf-8"),
+                (output_dir / "AI产品岗实习-IP-R-20260702-1330-qa-original.md").read_text(encoding="utf-8"),
             )
 
     def test_bundle_exports_confirmed_notebook_without_mutation(self):
@@ -440,7 +463,7 @@ class ReportCliTests(unittest.TestCase):
             source.write_text(json.dumps(sample_package(), ensure_ascii=False), encoding="utf-8")
             written = write_artifact_bundle(str(source), str(data_dir), str(output_dir))
             self.assertEqual(6, len(written))
-            exported = output_dir / "IP-R-20260702-1330-interview-answer-notebook.md"
+            exported = output_dir / "AI产品岗实习-IP-R-20260702-1330-interview-answer-notebook.md"
             self.assertEqual(original, exported.read_bytes())
             self.assertEqual(original, notebook.markdown_path.read_bytes())
             with sqlite3.connect(notebook.database_path) as connection:
@@ -608,7 +631,7 @@ class ReportCliTests(unittest.TestCase):
                 path.name: path.read_bytes() for path in output_dir.iterdir()
             }
             original_replace = Path.replace
-            retained_name = "IP-R-20260702-1330-qa-original.md"
+            retained_name = "AI产品岗实习-IP-R-20260702-1330-qa-original.md"
 
             def fail_publication_and_restore(path, target):
                 if (
@@ -819,7 +842,7 @@ class ReportCliTests(unittest.TestCase):
                     "SELECT COUNT(*) FROM session_revisions WHERE session_id = 'retry_session'"
                 ).fetchone()[0]
             analysis = (
-                output_dir / "IP-R-20260702-1330-analysis.md"
+                output_dir / "AI产品岗实习-IP-R-20260702-1330-analysis.md"
             ).read_text(encoding="utf-8")
             self.assertEqual(2, current_revision)
             self.assertEqual(2, revision_count)
@@ -854,12 +877,12 @@ class ReportCliTests(unittest.TestCase):
 
             self.assertIn(
                 "| 问题定义 | 3.50 / 5 | 2 | 2 |",
-                (output_dir / "IP-R-20260702-1330-ability-model.md").read_text(
+                (output_dir / "AI产品岗实习-IP-R-20260702-1330-ability-model.md").read_text(
                     encoding="utf-8"
                 ),
             )
             frequent_questions = (
-                output_dir / "IP-R-20260702-1330-frequent-questions.md"
+                output_dir / "AI产品岗实习-IP-R-20260702-1330-frequent-questions.md"
             ).read_text(encoding="utf-8")
             self.assertIn("修订后的问题", frequent_questions)
             self.assertNotIn("项目解决了什么需求？", frequent_questions)
@@ -894,8 +917,8 @@ class ReportCliTests(unittest.TestCase):
             write_artifact_bundle(str(first_path), str(data_dir), str(output_dir))
 
             names = {path.name for path in output_dir.iterdir()}
-            self.assertIn("IP-R-20260702-1330-analysis.md", names)
-            self.assertIn("IP-R-20260702-1330-01-analysis.md", names)
+            self.assertIn("AI产品岗实习-IP-R-20260702-1330-analysis.md", names)
+            self.assertIn("AI产品岗实习-IP-R-20260702-1330-01-analysis.md", names)
             self.assertFalse(any("-02-" in name for name in names))
 
     def test_single_cli_defaults_to_markdown_text(self):

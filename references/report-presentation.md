@@ -25,14 +25,14 @@ Keep raw IDs and English dimension codes out of the main conclusions. The render
 
 ## Per-interview artifact bundle
 
-Every accepted interview, including the first, produces one shared timestamp stem and six Markdown artifacts (five reports and a complete long-term notebook snapshot):
+Every accepted interview, including the first, produces one shared role-and-timestamp stem and six Markdown artifacts (five reports and a complete long-term notebook snapshot):
 
-- `IP-{R|M}-YYYYMMDD-HHMM-analysis.md`
-- `IP-{R|M}-YYYYMMDD-HHMM-qa-original.md`
-- `IP-{R|M}-YYYYMMDD-HHMM-ability-model.md`
-- `IP-{R|M}-YYYYMMDD-HHMM-frequent-questions.md`
-- `IP-{R|M}-YYYYMMDD-HHMM-comparison.md`
-- `IP-{R|M}-YYYYMMDD-HHMM-interview-answer-notebook.md`
+- `<岗位名>-IP-{R|M}-YYYYMMDD-HHMM-analysis.md`
+- `<岗位名>-IP-{R|M}-YYYYMMDD-HHMM-qa-original.md`
+- `<岗位名>-IP-{R|M}-YYYYMMDD-HHMM-ability-model.md`
+- `<岗位名>-IP-{R|M}-YYYYMMDD-HHMM-frequent-questions.md`
+- `<岗位名>-IP-{R|M}-YYYYMMDD-HHMM-comparison.md`
+- `<岗位名>-IP-{R|M}-YYYYMMDD-HHMM-interview-answer-notebook.md`
 
 The sixth artifact copies the full confirmed notebook without editing its entries, index, revisions, or master file. If there are no confirmed entries, still output a document explicitly stating that the notebook is empty. Pending answers must never be collected by report generation. Always return links to all six artifacts. A missing master file with existing confirmed entries is an export error, not an empty notebook.
 

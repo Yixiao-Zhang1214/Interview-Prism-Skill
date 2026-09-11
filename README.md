@@ -200,15 +200,15 @@ Interview Prism 的完整闭环不是“生成报告后结束”，而是：
 
 ## 文件与数据
 
-每场面试的报告文件采用统一前缀，例如：
+每场面试的六份文档都以面试岗位名开头，再加面试时间和文档类型，方便按岗位查找。同岗位同一分钟的不同场次会追加编号区分。岗位名取自面试材料，缺失时先询问用户。例如 AI 产品岗实习：
 
 ```text
-IP-R-20260818-1359-analysis.md
-IP-R-20260818-1359-qa-original.md
-IP-R-20260818-1359-ability-model.md
-IP-R-20260818-1359-frequent-questions.md
-IP-R-20260818-1359-comparison.md
-IP-R-20260818-1359-interview-answer-notebook.md
+AI产品岗实习-IP-R-20260818-1359-analysis.md
+AI产品岗实习-IP-R-20260818-1359-qa-original.md
+AI产品岗实习-IP-R-20260818-1359-ability-model.md
+AI产品岗实习-IP-R-20260818-1359-frequent-questions.md
+AI产品岗实习-IP-R-20260818-1359-comparison.md
+AI产品岗实习-IP-R-20260818-1359-interview-answer-notebook.md
 ```
 
 长期数据目录包含：

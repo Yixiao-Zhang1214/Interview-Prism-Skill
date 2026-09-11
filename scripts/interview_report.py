@@ -3,6 +3,7 @@ from collections import Counter
 from datetime import datetime
 import json
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import sys
@@ -367,6 +368,14 @@ def build_single_view(package: dict) -> dict:
 
 
 def artifact_stem(session: dict) -> str:
+    role = session.get("role")
+    if not isinstance(role, str) or not role.strip():
+        raise ValueError("interview role is required for artifact naming")
+    role = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', "_", role)
+    role = re.sub(r"\s+", "_", role).strip(" ._")
+    role = role.encode("utf-8")[:120].decode("utf-8", errors="ignore").rstrip(" ._")
+    if not role:
+        raise ValueError("interview role must contain a usable filename character")
     occurred_at = session.get("occurred_at")
     if not isinstance(occurred_at, str) or not occurred_at.strip():
         raise ValueError("interview occurred_at is required for artifact naming")
@@ -377,7 +386,7 @@ def artifact_stem(session: dict) -> str:
     ledger = {"real": "R", "mock": "M"}.get(session.get("source_type"))
     if ledger is None:
         raise ValueError("source_type must be real or mock")
-    return f"IP-{ledger}-{occurred:%Y%m%d-%H%M}"
+    return f"{role}-IP-{ledger}-{occurred:%Y%m%d-%H%M}"
 
 
 def _overall_interviewer_thought(review: dict, reactions: dict) -> list[str]:
@@ -857,6 +866,7 @@ def read_notebook_snapshot(data_dir: str) -> bytes:
 def write_artifact_bundle(file_path: str, data_dir: str, output_dir: str) -> List[Path]:
     package = json.loads(Path(file_path).read_text(encoding="utf-8"))
     validate_session_package(package)
+    artifact_stem(package["session"])
     import_result = import_session(data_dir, package)
     if not isinstance(import_result, dict):
         raise ValueError("import_session returned an invalid result")

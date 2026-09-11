@@ -28,7 +28,7 @@ Approved onboarding message:
 > - 给出下一次可以直接使用的改进方向
 > - 保存本次记录，并在积累多场后生成综合报告
 >
-> 每场面试会固定生成 5 个文档，原始文字和分析证据都会完整保留。
+> 每场面试会固定生成 6 个文档：五份复盘报告，以及你的长期错题本。错题本只保存你确认收录的答案，没有收录时会显示为空。
 >
 > 准备好后，直接上传你的第一份面试文字稿吧。
 
@@ -136,7 +136,7 @@ Choose a user data directory outside this Skill. Do not store interview archives
 
 ## Output Contract
 
-- For every newly accepted interview, including the first one, run `interview_report.py bundle`. Return the primary report directly in chat and save exactly five timestamp-prefixed Markdown reports: `analysis.md`, `qa-original.md`, `ability-model.md`, `frequent-questions.md`, and `comparison.md`. Keep canonical structured session data inside the local ledger; do not expose `session.json` as a user-facing artifact.
+- For every newly accepted interview, including the first one, run `interview_report.py bundle`. Return the primary report directly in chat and link exactly six timestamp-prefixed Markdown artifacts: `analysis.md`, `qa-original.md`, `ability-model.md`, `frequent-questions.md`, `comparison.md`, and `interview-answer-notebook.md`. The sixth artifact is a read-only snapshot of the complete confirmed long-term notebook, or an explicit empty-state document if no entries are confirmed. Exporting it must never confirm proposals or modify notebook entries, revisions, or the master Markdown. Keep canonical structured session data inside the local ledger; do not expose `session.json` as a user-facing artifact.
 - Derive the shared stem from the interview occurrence time: `IP-R-YYYYMMDD-HHMM` for real interviews and `IP-M-YYYYMMDD-HHMM` for mock interviews. Ask for the interview time when it is missing; never substitute import time. Add `-01`, `-02`, and so on only for different sessions in the same minute.
 - On the first input, label the ability model as an initial snapshot with no trend, and every question as a first occurrence rather than falsely calling it high frequency. On later inputs, preserve session artifacts and regenerate the cumulative same-ledger ability model and question-management documents.
 - Use Markdown for every report. The presentation layer has no HTML workflow.
@@ -165,7 +165,7 @@ Choose a user data directory outside this Skill. Do not store interview archives
 
 ## 长期面试错题本
 
-错题本是跨面试长期维护的独立资产，不属于单场面试固定输出的五份报告。结构化事实保存在 `<data-dir>/library.db`，可读版本保存在 `<data-dir>/interview-answer-notebook.md`。
+错题本是跨面试长期维护的资产，每场面试都将其完整快照作为第六个产物输出。结构化事实保存在 `<data-dir>/library.db`，长期主本保存在 `<data-dir>/interview-answer-notebook.md`。输出目录中的带时间前缀副本仅用于阅读，后续确认的增删改始终作用于长期主本；再次生成报告会更新该场次的快照。没有已确认条目时，第六份文档明确显示“暂无已确认收录的错题”，仍须输出并提供链接。
 
 ### 强制规则
 

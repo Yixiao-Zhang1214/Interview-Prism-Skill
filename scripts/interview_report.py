@@ -812,6 +812,48 @@ def _resolve_artifact_stem(output_dir: Path, package: dict) -> str:
     raise ValueError("too many interviews share the same minute")
 
 
+def read_notebook_snapshot(data_dir: str) -> bytes:
+    """Export the confirmed notebook without creating or updating its records."""
+    from answer_notebook import _entry_blocks, _validate_markdown
+
+    root = Path(data_dir).expanduser().resolve()
+    database_path = root / "library.db"
+    active_ids = set()
+    if database_path.exists():
+        connection = sqlite3.connect(database_path.as_uri() + "?mode=ro", uri=True)
+        try:
+            exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='answer_notebook_entries'"
+            ).fetchone()
+            if exists:
+                active_ids = {
+                    row[0] for row in connection.execute(
+                        "SELECT entry_id FROM answer_notebook_entries WHERE deleted_at IS NULL"
+                    )
+                }
+        finally:
+            connection.close()
+    notebook_path = root / "interview-answer-notebook.md"
+    if notebook_path.exists():
+        content = notebook_path.read_bytes()
+        markdown = content.decode("utf-8")
+        _validate_markdown(markdown)
+        if set(_entry_blocks(markdown)) != active_ids:
+            raise ValueError("错题本正文与已确认条目不一致，已停止导出。")
+        if active_ids:
+            return content
+    elif active_ids:
+        raise ValueError("已有已确认错题，但长期错题本文件缺失，无法导出快照。")
+    return (
+        "# 面试错题本\n\n"
+        "暂无已确认收录的错题。\n\n"
+        "这是本次报告生成时的长期错题本快照。你可以提供自己的答案，"
+        "或与 AI 共同整理后确认收录；生成报告不会自动收录任何回答。\n\n"
+        "## 错题目录\n\n暂无条目。\n"
+    ).encode("utf-8")
+
+
 def write_artifact_bundle(file_path: str, data_dir: str, output_dir: str) -> List[Path]:
     package = json.loads(Path(file_path).read_text(encoding="utf-8"))
     validate_session_package(package)
@@ -846,6 +888,7 @@ def write_artifact_bundle(file_path: str, data_dir: str, output_dir: str) -> Lis
         f"{stem}-ability-model.md": render_ability_model_text(packages),
         f"{stem}-frequent-questions.md": render_frequent_questions_text(packages),
         f"{stem}-comparison.md": render_comparison_text(packages),
+        f"{stem}-interview-answer-notebook.md": read_notebook_snapshot(data_dir),
     }
     obsolete_names = [f"{stem}-session.json"]
     temporary = Path(tempfile.mkdtemp(prefix=".interview-report-", dir=destination))
@@ -854,7 +897,10 @@ def write_artifact_bundle(file_path: str, data_dir: str, output_dir: str) -> Lis
     retain_temporary = False
     try:
         for name, content in contents.items():
-            (temporary / name).write_text(content, encoding="utf-8")
+            if isinstance(content, bytes):
+                (temporary / name).write_bytes(content)
+            else:
+                (temporary / name).write_text(content, encoding="utf-8")
 
         previous.mkdir()
         for name in list(contents) + obsolete_names:

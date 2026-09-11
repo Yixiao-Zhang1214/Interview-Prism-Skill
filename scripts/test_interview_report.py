@@ -22,6 +22,7 @@ from interview_report import (
     render_comparison_text,
     render_frequent_questions_text,
     render_single_text,
+    read_notebook_snapshot,
     write_artifact_bundle,
 )
 from interview_store import GROWTH_TASK_STATUSES, import_session, soft_delete_session
@@ -392,8 +393,14 @@ class ReportCliTests(unittest.TestCase):
                 "IP-R-20260702-1330-ability-model.md",
                 "IP-R-20260702-1330-frequent-questions.md",
                 "IP-R-20260702-1330-comparison.md",
+                "IP-R-20260702-1330-interview-answer-notebook.md",
             }
             self.assertEqual({item.name for item in output_dir.iterdir()}, expected)
+            self.assertIn(
+                "暂无已确认收录的错题",
+                (output_dir / "IP-R-20260702-1330-interview-answer-notebook.md").read_text(encoding="utf-8"),
+            )
+            self.assertFalse((data_dir / "interview-answer-notebook.md").exists())
             analysis = (output_dir / "IP-R-20260702-1330-analysis.md").read_text(encoding="utf-8")
             self.assertIn("```mermaid", analysis)
             self.assertIn(
@@ -406,6 +413,66 @@ class ReportCliTests(unittest.TestCase):
                 "项目解决了什么需求？",
                 (output_dir / "IP-R-20260702-1330-qa-original.md").read_text(encoding="utf-8"),
             )
+
+    def test_bundle_exports_confirmed_notebook_without_mutation(self):
+        from answer_notebook import AnswerNotebook
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "library"
+            output_dir = root / "outputs"
+            notebook = AnswerNotebook(data_dir)
+            for question in ("如何设计推荐反馈？", "如何复盘项目？"):
+                operation = notebook.propose_add({
+                    "canonical_question": question,
+                    "best_answer": "这是用户已确认的回答。",
+                    "answer_source": "user",
+                })
+                notebook.confirm(operation.operation_id)
+            pending = notebook.propose_update("NB-0001", {"best_answer": "尚未确认的修改"})
+            original = notebook.markdown_path.read_bytes()
+            with sqlite3.connect(notebook.database_path) as connection:
+                before = {
+                    table: connection.execute("SELECT * FROM " + table).fetchall()
+                    for table in ("answer_notebook_entries", "answer_notebook_revisions", "answer_notebook_pending_operations")
+                }
+            source = root / "source.json"
+            source.write_text(json.dumps(sample_package(), ensure_ascii=False), encoding="utf-8")
+            written = write_artifact_bundle(str(source), str(data_dir), str(output_dir))
+            self.assertEqual(6, len(written))
+            exported = output_dir / "IP-R-20260702-1330-interview-answer-notebook.md"
+            self.assertEqual(original, exported.read_bytes())
+            self.assertEqual(original, notebook.markdown_path.read_bytes())
+            with sqlite3.connect(notebook.database_path) as connection:
+                for table, rows in before.items():
+                    self.assertEqual(rows, connection.execute("SELECT * FROM " + table).fetchall())
+            notebook.confirm(pending.operation_id)
+            write_artifact_bundle(str(source), str(data_dir), str(output_dir))
+            self.assertEqual(notebook.markdown_path.read_bytes(), exported.read_bytes())
+
+    def test_snapshot_missing_master_with_confirmed_entries_fails(self):
+        from answer_notebook import AnswerNotebook
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            notebook = AnswerNotebook(temp_dir)
+            operation = notebook.propose_add({"canonical_question": "问题", "best_answer": "回答"})
+            notebook.confirm(operation.operation_id)
+            notebook.markdown_path.unlink()
+            with self.assertRaisesRegex(ValueError, "文件缺失"):
+                read_notebook_snapshot(temp_dir)
+
+    def test_empty_snapshot_is_read_only_even_with_pending_proposal(self):
+        from answer_notebook import AnswerNotebook
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            notebook = AnswerNotebook(temp_dir)
+            notebook.propose_add({"canonical_question": "问题", "best_answer": "待确认答案"})
+            original = notebook.database_path.read_bytes()
+            content = read_notebook_snapshot(temp_dir).decode("utf-8")
+            self.assertIn("暂无已确认收录的错题", content)
+            self.assertNotIn("待确认答案", content)
+            self.assertEqual(original, notebook.database_path.read_bytes())
+            self.assertFalse(notebook.markdown_path.exists())
 
     def test_bundle_rejects_duplicate_source_without_artifacts(self):
         with tempfile.TemporaryDirectory() as temp_dir:

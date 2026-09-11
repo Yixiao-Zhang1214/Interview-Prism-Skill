@@ -25,13 +25,16 @@ Keep raw IDs and English dimension codes out of the main conclusions. The render
 
 ## Per-interview artifact bundle
 
-Every accepted interview, including the first, produces one shared timestamp stem and five Markdown reports:
+Every accepted interview, including the first, produces one shared timestamp stem and six Markdown artifacts (five reports and a complete long-term notebook snapshot):
 
 - `IP-{R|M}-YYYYMMDD-HHMM-analysis.md`
 - `IP-{R|M}-YYYYMMDD-HHMM-qa-original.md`
 - `IP-{R|M}-YYYYMMDD-HHMM-ability-model.md`
 - `IP-{R|M}-YYYYMMDD-HHMM-frequent-questions.md`
 - `IP-{R|M}-YYYYMMDD-HHMM-comparison.md`
+- `IP-{R|M}-YYYYMMDD-HHMM-interview-answer-notebook.md`
+
+The sixth artifact copies the full confirmed notebook without editing its entries, index, revisions, or master file. If there are no confirmed entries, still output a document explicitly stating that the notebook is empty. Pending answers must never be collected by report generation. Always return links to all six artifacts. A missing master file with existing confirmed entries is an export error, not an empty notebook.
 
 The analysis embeds a Mermaid ability chart directly in the Markdown report. The comparison report includes all non-deleted sessions in the same ledger up to the current bundle. A first-session ability model explicitly has no trend; a first-session question record explicitly has no high-frequency claim; a first-session comparison explicitly reports insufficient sample. Later bundles rebuild all cumulative reports from the current ledger.
 
